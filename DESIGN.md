@@ -1,6 +1,8 @@
-# youtube-collector: Product Requirements
+# youtube-collector: Requirements and Design
 
-Status: **draft for review**, written 2026-11-06. This document records requirements agreed in a design discussion held in the `youtube-whisperer` repository, plus assumptions that stand unless the user objects. Nothing here is implemented yet.
+This document owns the product requirements, system design, product contracts and accepted user decisions. [README](README.md) covers setup and operation; [TODO](TODO.md) owns outstanding work and unresolved choices; [AGENTS](AGENTS.md) and the repository skills own working procedures.
+
+Status: accepted requirements, written 2026-11-06 as a product requirements document (originally `PRD.md`) in a design discussion held in the `youtube-whisperer` repository. They include assumptions that stand unless the user objects. **Nothing here is implemented yet**: until implementation, every section describes intended behavior, not current behavior. As components are built, record their architecture here, and record later decisions after C21 with new IDs.
 
 Requirement words (MUST, SHOULD, MAY) follow BCP 14. Behavior inherited from `youtube-whisperer` cites that project at revision `474f5dc` (the "source revision"); it describes what the code did there, which the collector reimplements rather than imports.
 
@@ -275,7 +277,7 @@ Changed or dropped:
 
 ## 9. Engineering standards
 
-The repository adopts `youtube-whisperer`'s working standards: its AGENTS.md, the adversarial review and grouped task execution skills, the coverage gate, mypy and ruff. These will be adapted in a separate step with the user. Automated tests MUST NOT contact YouTube or read the Firefox profile, and MUST keep all reads and writes inside test-owned temporary directories, including the SQLite database. The worker thread, the reconciliation thread and long-poll waiters MUST be testable with injected clocks and explicit completion signals rather than elapsed-time waits.
+The repository adopts `youtube-whisperer`'s working standards: its AGENTS.md, the adversarial review and grouped task execution skills, the coverage gate, mypy and ruff, adapted on 2026-11-06 from `youtube-whisperer` revision `474f5dc`. The rationale for those standards is recorded in that revision's `DESIGN.md` under "Engineering governance" (decisions D1, D4 and D28–D44) and is not copied here. Adaptations: references to Redis, Azure and Whisper were replaced with the collector's own resources, the test-import rule names `youtube_collector`, and running anything against real YouTube needs the user's authorization for each run. Automated tests MUST NOT contact YouTube or read the Firefox profile, and MUST keep all reads and writes inside test-owned temporary directories, including the SQLite database. The worker thread, the reconciliation thread and long-poll waiters MUST be testable with injected clocks and explicit completion signals rather than elapsed-time waits.
 
 ## 10. Integration with youtube-whisperer
 
