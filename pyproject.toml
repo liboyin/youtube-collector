@@ -1,0 +1,36 @@
+[project]
+name = "youtube-collector"
+version = "0.0.1"
+description = "Download YouTube videos, playlists and captions"
+requires-python = ">=3.12"
+authors = [
+  {name = "Libo Yin", email = "liboyin830@gmail.com"}
+]
+dependencies = []
+
+[dependency-groups]
+dev = [
+  "mypy",
+  "pytest",
+  "pytest-cov",
+  "pytest-mock",
+  "pytest-randomly",
+  "ruff",
+]
+
+[tool.mypy]
+check_untyped_defs = true
+disallow_untyped_defs = true
+ignore_missing_imports = true
+strict_optional = true
+warn_redundant_casts = true
+warn_unused_configs = true
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The project-skeleton task adds --cov=youtube_collector when the application package exists.
+addopts = "--cov=.agents/skills/adversarial-review/references --cov-report=term-missing --cov-fail-under=80"
+
+[tool.coverage.run]
+branch = true
