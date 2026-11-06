@@ -1,0 +1,43 @@
+{
+    "dockerComposeFile": [
+        "../docker-compose.yaml",
+        // builds the app service from the Dockerfile's dev target, which adds the dev tools
+        "docker-compose.devcontainer.yaml"
+    ],
+    "service": "app",
+    "features": {
+        // base image doesn't have sudo
+        "ghcr.io/devcontainers/features/common-utils:latest": {
+            "configureZshAsDefaultShell": true
+        }
+    },
+    "overrideCommand": true,
+    "postCreateCommand": "chmod +x .devcontainer/postCreateCommand.sh && ./.devcontainer/postCreateCommand.sh",
+    "remoteUser": "ubuntu",
+    "workspaceFolder": "/workspaces/youtube-collector",
+    "mounts": [
+        // share Git + SSH config between host and container
+        "source=${localEnv:HOME}/.gitconfig,target=/home/ubuntu/.gitconfig,type=bind,readonly",
+        "source=${localEnv:HOME}/.ssh,target=/home/ubuntu/.ssh,type=bind,readonly",
+        // override .dockerignore to mount the entire workspace
+        "source=${localWorkspaceFolder},target=/workspaces/youtube-collector,type=bind"
+    ],
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "anthropic.claude-code",
+                "charliermarsh.ruff",
+                "mhutchie.git-graph",
+                "ms-python.debugpy",
+                "ms-python.python",
+                "ms-python.vscode-pylance",
+                "ms-vscode.live-server",
+                "openai.chatgpt",
+                "ryu1kn.partial-diff",
+                "streetsidesoftware.code-spell-checker",
+                "tamasfe.even-better-toml",
+                "yzhang.markdown-all-in-one"
+            ]
+        }
+    }
+}

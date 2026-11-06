@@ -1,0 +1,7 @@
+# Dev container override, layered on ../docker-compose.yaml by devcontainer.json. Only the
+# service the dev container attaches to gets the dev target, which adds the locked dev group
+# through PYPI_PROXY at build time. Compose defines no other service.
+services:
+  app:
+    build:
+      target: dev

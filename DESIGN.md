@@ -235,6 +235,8 @@ An unknown job or failure returns 404. Validation errors return 422. Unexpected 
 - Dependencies are locked with uv and installed through the shared `docker-build-common` helpers, as in `youtube-whisperer` (D50, D52). yt-dlp breaks whenever YouTube changes and ships fixes often, so the project MUST provide a script that runs `uv lock --upgrade-package yt-dlp` and rebuilds the image, following `youtube-whisperer`'s `update-dependencies.sh`. Other dependencies keep their locked versions.
 - The user creates the staging marker (5.13) once, at the root of the share.
 
+Implemented by T1: the Dockerfile's `runtime` and `dev` targets, built from `ubuntu:24.04` with the shared helpers, a uv-locked venv at `/opt/venv`, ffmpeg and Deno; the single Compose service `app` with the staging, Firefox-profile and `collector_db` mounts (the database directory is `/var/lib/youtube-collector`); and the devcontainer, whose creation hook checks the lock offline. `./update-dependencies.sh yt-dlp` fulfils C19's yt-dlp update; rebuilding the image deploys it. The service entrypoint and published port are added with the API. [README](README.md) owns setup and configuration.
+
 Configuration (environment variable names are to be chosen during implementation):
 
 | Setting | Assumed default |

@@ -22,8 +22,8 @@ Use the [grouped task execution skill](.agents/skills/grouped-task-execution/SKI
 
 ## Active backlog
 
-No tasks have been recorded yet. The next planning step breaks [DESIGN.md](DESIGN.md) into bounded tasks, including the repository's own devcontainer and project skeleton. The skeleton task must also create the `youtube_collector` package, add it to the coverage options in `pyproject.toml`, and lock dependencies with uv; until then `uv.lock` does not exist, and the gates run with the tools installed in the `youtube-whisperer` devcontainer.
+The application work in [DESIGN.md](DESIGN.md) has not been broken into tasks yet; that planning step runs inside the devcontainer T1 created.
 
 ## Dispositions
 
-None yet.
+- **T1** (devcontainer and project skeleton): implemented; gates and review passed; the image build is unverified because Docker was unavailable. [Record](completed_work/T1.md).

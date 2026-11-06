@@ -1,0 +1,33 @@
+services:
+  app:
+    build:
+      context: .
+      # The service runs the lean image; the dev container overrides it to the `dev` target
+      # (.devcontainer/docker-compose.devcontainer.yaml).
+      target: runtime
+      additional_contexts:
+        # Shared apt/uv install scripts, pinned to a version tag. Set BUILD_COMMON_CONTEXT in
+        # .env to a local clone to build offline, or to test a change to the helpers before it
+        # is tagged.
+        build_common: "${BUILD_COMMON_CONTEXT:-https://github.com/liboyin/docker-build-common.git#v1.2.0}"
+      args:
+        # Optional caching proxies. Default to empty (direct internet); set in .env to use a proxy.
+        APT_PROXY: ${APT_PROXY:-}
+        PYPI_PROXY: ${PYPI_PROXY:-}
+    container_name: youtube-collector-app
+    init: true
+    # The API task adds the service's entrypoint, published port and restart policy. Until
+    # then the container is only useful as the dev container, which supplies its own command.
+    volumes:
+      # Staging area; defaults to the repo's ./assets directory. Override with a host path in .env.
+      - ${ASSETS_DIR:-./assets}:/workspaces/youtube-collector/assets
+      # Firefox profile for yt-dlp cookies; defaults to an empty named volume (no cookies).
+      # Set FIREFOX_PROFILE_DIR to a host profile directory to download private/age-gated videos.
+      - ${FIREFOX_PROFILE_DIR:-firefox_profile}:/home/ubuntu/snap/firefox/common/.mozilla/firefox
+      # Job and failure records. Local Docker storage, never the SMB staging share, and a named
+      # volume so the records survive container recreation. `docker compose down -v` deletes it.
+      - collector_db:/var/lib/youtube-collector
+
+volumes:
+  firefox_profile:
+  collector_db:

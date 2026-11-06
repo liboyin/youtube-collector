@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools >= 64.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "youtube-collector"
 version = "0.0.1"
@@ -6,7 +10,13 @@ requires-python = ">=3.12"
 authors = [
   {name = "Libo Yin", email = "liboyin830@gmail.com"}
 ]
-dependencies = []
+dependencies = [
+  "fastapi[standard]",
+  "pathlib-extensions@git+https://github.com/liboyin/pathlib-extensions.git",
+  "requests",
+  "youtube-transcript-api",
+  "yt-dlp[default]",
+]
 
 [dependency-groups]
 dev = [
@@ -29,8 +39,10 @@ warn_unused_ignores = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# The project-skeleton task adds --cov=youtube_collector when the application package exists.
-addopts = "--cov=.agents/skills/adversarial-review/references --cov-report=term-missing --cov-fail-under=80"
+addopts = "--cov=youtube_collector --cov=.agents/skills/adversarial-review/references --cov-report=term-missing --cov-fail-under=80"
 
 [tool.coverage.run]
 branch = true
+
+[tool.setuptools.packages.find]
+include = ["youtube_collector*"]
