@@ -21,7 +21,6 @@ Link to the owning document instead of duplicating its procedure. Skills and oth
 - State assumptions. Confirm unresolved choices that materially affect scope, architecture, dataflow, correctness, security, or user-visible behavior before dependent work; continue independent work where possible.
 - Accepted decisions and user authorization persist. Do not ask again about settled choices. Document superseding decisions and their reasoning before committing the affected change.
 - Non-material assumptions MAY be made when repository evidence supports them and they preserve the requested outcome. Name the assumption, evidence, and effect in the handoff.
-- Bounded subtasks SHOULD use subagents when independent work or investigation justifies the handoff cost. Closely coupled tasks touching the same code MAY share one implementation agent. The main agent remains accountable for integration and verification.
 - For a group of related TODO tasks, follow the recommended [grouped task execution workflow](.agents/skills/grouped-task-execution/SKILL.md), unless the user specifies another approach.
 
 # Design and Documentation
