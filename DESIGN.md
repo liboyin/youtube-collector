@@ -2,7 +2,7 @@
 
 This document owns the product requirements, system design, product contracts and accepted user decisions. [README](README.md) covers setup and operation; [TODO](TODO.md) owns outstanding work and unresolved choices; [AGENTS](AGENTS.md) and the repository skills own working procedures.
 
-Status: accepted requirements, written 2026-11-06 as a product requirements document (originally `PRD.md`) in a design discussion held in the `youtube-whisperer` repository. They include assumptions that stand unless the user objects. **No application behavior is implemented yet**: sections 5, 6 and 10 describe intended behavior, not current behavior, while section 7 records which deployment and development-environment parts the scaffolding tasks have implemented. As components are built, record their architecture here, and record later decisions after C21 with new IDs.
+Status: accepted requirements, written 2026-11-06 as a product requirements document (originally `PRD.md`) in a design discussion held in the `youtube-whisperer` repository. They include assumptions that stand unless the user objects. **The service does not run yet**: sections 5, 6 and 10 describe intended behavior, not current behavior; section 7 records which deployment and development-environment parts the scaffolding tasks have implemented, and section 14 records the application components built so far. As components are built, record their architecture in section 14, and record later decisions with new IDs after the last one in section 11.
 
 Requirement words (MUST, SHOULD, MAY) follow BCP 14. Behavior inherited from `youtube-whisperer` cites that project at revision `474f5dc` (the "source revision"); it describes what the code did there, which the collector reimplements rather than imports.
 
@@ -372,3 +372,18 @@ These follow from repository evidence or the discussion, and stand unless the us
 - The tuning values in section 7 are starting defaults, not measured requirements.
 - An item's title and ID come from a metadata request on the worker thread, as at the source revision; the implementation MAY use a playlist's flat-extraction entries instead, when they supply the same values.
 - The collector writes only new files and never deletes anything from staging.
+
+## 14. Architecture
+
+The application is one package, `youtube_collector`, with one module per responsibility. API request handlers never touch the staging share (C25): only the worker and the reconciliation thread call the staging layer.
+
+Implemented (pure or filesystem-only building blocks; nothing composes them into a service yet):
+
+| Module | Responsibility | Task |
+|---|---|---|
+| `urls` | Turns a submitted URL into a video or playlist target with a canonical URL, syntactically (5.2) | [T15](completed_work/T15.md) |
+| `languages` | Checks that language candidates are well-formed BCP 47 tags and selects one caption track (5.6) | [T16](completed_work/T16.md) |
+| `staging` | File and folder names, the root marker, existing-artifact lookup by ID, `NEVER` publication through a stage directory, and presence checks (5.4, 5.13) | [T17](completed_work/T17.md) |
+| `categories` | Maps an error to a failure category and keeps its raw message (5.9) | [T18](completed_work/T18.md) |
+
+Planned in [TODO](TODO.md#active-backlog): `store` (SQLite, T19), the yt-dlp and caption adapters (T20), the worker (T21), reconciliation (T22), the change feed and long-poll notification (T23), and the HTTP API, configuration and entrypoint (T24).
