@@ -14,7 +14,7 @@
     "service": "app",
     "features": {
         // base image doesn't have sudo
-        "ghcr.io/devcontainers/features/common-utils:latest": {
+        "ghcr.io/devcontainers/features/common-utils:2": {
             "configureZshAsDefaultShell": true
         }
     },

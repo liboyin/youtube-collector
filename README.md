@@ -10,7 +10,7 @@ The planned service is unauthenticated and intended for a trusted LAN only. Do n
 
 ## Dev Container (recommended)
 
-Open the repository in VS Code and reopen it in the Dev Container (`.devcontainer/`). The container's `app` service builds the Dockerfile's `dev` target (`.devcontainer/docker-compose.devcontainer.yaml`), which installs the locked runtime and `dev` dependencies and the editable project into the venv at `/opt/venv`, first on `PATH`. Every PyPI package is fetched through `PYPI_PROXY` when it is set. The image also contains ffmpeg, Deno (yt-dlp's JavaScript runtime) and uv.
+Open the repository in VS Code and reopen it in the Dev Container (`.devcontainer/`). The container's `app` service builds the Dockerfile's `dev` target (`.devcontainer/docker-compose.devcontainer.yaml`), which installs the locked runtime and `dev` dependencies and the editable project into the venv at `/opt/venv`, first on `PATH`. Every PyPI package is fetched through `PYPI_PROXY` when it is set. The image is Ubuntu 26.04 with its distro Python 3.14, and also contains ffmpeg, Deno (yt-dlp's JavaScript runtime), uv, git and curl. The service's `runtime` target keeps only ffmpeg, Deno, Python and the venv, with the project installed as a regular package. The build fails if `uv.lock` no longer matches `pyproject.toml`.
 
 The creation hook installs no Python packages. It checks offline that `uv.lock` still matches `pyproject.toml` and fails if it doesn't, without ever rewriting the lock. It writes GitHub's SSH host keys, fetched over HTTPS from `api.github.com/meta`, to `~/.ssh/known_hosts`. It then installs Claude Code and standalone Codex with their native installers and verifies `codex --version`. Sign in with `codex login` before using direct CLI review; [the review skill](.agents/skills/adversarial-review/SKILL.md#reviewer-session) owns dispatch and authentication checks.
 
@@ -44,7 +44,7 @@ The `collector_db` named volume, mounted at `/var/lib/youtube-collector`, will h
 
 yt-dlp breaks whenever YouTube changes and ships fixes often, so `./update-dependencies.sh yt-dlp` is the routine way to update it alone. To add a dependency, use `uv add <package>` for runtime or `uv add --group dev <package>` for a dev tool; it updates `pyproject.toml`, `uv.lock` and the venv together.
 
-Then review the `uv.lock` diff, run the gates under [Testing](#testing), commit `pyproject.toml` and `uv.lock` together, and rebuild the image to deploy the new lock. The image installs only what the lock records, and its build does not check the lock against `pyproject.toml`; the dev container's creation hook does. The script talks to PyPI directly, because a lock resolved through the mirror would record the mirror's URLs; rebuilding the dev container then installs the new lock through the mirror.
+Then review the `uv.lock` diff, run the gates under [Testing](#testing), commit `pyproject.toml` and `uv.lock` together, and rebuild the image to deploy the new lock. The image installs only what the lock records; both its build and the dev container's creation hook check offline that the lock still matches `pyproject.toml`, and fail if it doesn't. The script talks to PyPI directly, because a lock resolved through the mirror would record the mirror's URLs; rebuilding the dev container then installs the new lock through the mirror.
 
 ## Testing
 
