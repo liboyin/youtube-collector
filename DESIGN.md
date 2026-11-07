@@ -176,7 +176,9 @@ Every change to a job, item or failure, including removal, MUST stamp the record
 - `GET /jobs/changes?since=<cursor>&wait=<seconds>` returns the changes with revisions greater than `since`, oldest first and coalesced to the latest state of each record. It returns immediately when changes exist; otherwise it waits up to `wait` seconds and then returns an empty page. The response carries the next cursor and whether more changes remain.
 - `GET /jobs/{id}?since=<revision>&wait=<seconds>` waits the same way for one job.
 - `wait` MUST be capped (assumed 60 seconds) so proxies and clients do not cut off idle requests.
-- Tombstones are kept for a configured period (assumed 7 days). Pruning records the highest pruned revision `P` durably; a request with `since < P` MUST return 410, telling the caller to resynchronize from `GET /jobs`, while `since >= P` has lost nothing (decision C27). How a resynchronizing caller obtains a consistent snapshot and cursor, including failures, and how pagination interacts with coalescing are open (section 12).
+- Tombstones are kept for a configured period (assumed 7 days). Pruning records the highest pruned revision `P` durably; a request with `since < P` MUST return 410, telling the caller to resynchronize from `GET /jobs`, while `since >= P` has lost nothing (decision C27).
+- A change page lists each changed record once, in its latest state, ordered by revision, up to a limit; the next cursor is the last revision on the page, and a record that changes again moves to a later page (decision C38).
+- To resynchronize, a caller reads `GET /jobs` and `GET /failures`, each of which returns the revision its snapshot was read at from one read transaction, and follows the feed from the lower of the two; changes between the two reads are delivered again, so callers apply entries as upserts by record kind and ID (decision C38). Cursors are plain revisions: a cursor kept across a recreated database is not detected, an accepted risk (decision C38).
 - A running item's progress reports downloaded bytes, plus total bytes and a percentage whenever yt-dlp knows the total size.
 - Download progress updates MUST be throttled (assumed at most once a second per item, plus every state change), so waiting callers are not woken by every progress tick.
 
@@ -220,10 +222,10 @@ It returns 200 when everything is healthy and 503 otherwise, with the same body 
 | `POST /jobs/videos` | Submit a media job |
 | `POST /jobs/captions` | Submit a captions job |
 | `POST /jobs/videos-with-captions` | Submit a media-and-captions job |
-| `GET /jobs` | The status table: every job with its items, after requesting a reconciliation pass, with the time of the last completed one (5.8) |
+| `GET /jobs` | The status table: every job with its items, after requesting a reconciliation pass, with the time of the last completed one (5.8) and the revision of the snapshot (C38) |
 | `GET /jobs/{id}` | One job; optional `since` and `wait` for long polling |
 | `GET /jobs/changes` | The change feed; `since` and `wait` |
-| `GET /failures` | All uncleared failures, oldest first |
+| `GET /failures` | All uncleared failures, oldest first, with the revision of the snapshot (C38) |
 | `DELETE /failures` | Clear all failures; returns the cleared records |
 | `DELETE /failures/{id}` | Clear one failure |
 | `GET /health` | Service health and paused state (5.14) |
@@ -346,7 +348,7 @@ Decisions from the project review (2026-11-07), made by the user after two indep
 
 C26 and C27 correct contradictions that both reviews found, rather than choosing between alternatives.
 
-Decisions on the review's open questions (2026-11-07), made by the user. Q3 remains open (section 12).
+Decisions on the review's open questions (2026-11-07), made by the user. Q3 was settled later the same day as C38.
 
 | ID | Decision |
 |---|---|
@@ -355,18 +357,15 @@ Decisions on the review's open questions (2026-11-07), made by the user. Q3 rema
 | C35 | Settles Q4: C25 stands unchanged. How long `GET /jobs` waits for a requested reconciliation, and the age at which cached staging health counts as unhealthy, are implementation defaults rather than contract details, so they block no task (5.8, 5.14). |
 | C36 | Settles Q5: on SIGTERM the worker stops taking items, lets the current yt-dlp call finish or abandons it at the grace period, and relies on restart recovery; each thread owns its SQLite connection, and every write is one short transaction that also assigns the revision (5.12, section 7). |
 | C37 | Settles Q6: playlists are not capped in size, and the API does not validate the `Host` header against DNS rebinding. Neither is a demonstrated defect, and the service stays LAN-only (C7). |
+| C38 | Settles Q3 (refines C27), after the analysis in section 12: change pages hold each record once in its latest state, ordered by revision, with the last revision on the page as the next cursor; `GET /jobs` and `GET /failures` each return the revision of their snapshot, and a resynchronizing caller follows the feed from the lower one; cursors stay plain revisions, and a cursor kept across a recreated database is not detected, a risk the user accepted because recreating the volume is deliberate and the orchestrator can be reset by hand (5.10). |
 
 ## 12. Open questions
 
-These contract details were raised in the 2026-11-07 review and MUST be settled before the application tasks that depend on them. Each lists a proposal, which is not accepted. Q1, Q2 and Q4–Q6 were settled as C33–C37 (section 11).
-
-| ID | Question | Proposal |
-|---|---|---|
-| Q3 | Change-feed recovery (C27): how does a caller resynchronize consistently, including failures, and how do pages coalesce? | `GET /jobs` and `GET /failures` each return the revision their snapshot was read at, from one transaction. A change page lists each changed record once, at its latest revision, ordered by that revision; the next cursor is the last revision on the page. A record that changes again reappears on a later page. |
+No open questions remain. The 2026-11-07 review raised Q1–Q6, settled as C33–C38 (section 11). The analysis below records the alternatives behind C38.
 
 ### Q3 analysis (2026-11-07)
 
-Written at the user's request before deciding Q3. The store (T19) already fixes two facts that every option builds on. Every job, item and failure row carries its latest revision, and a removal leaves a tombstone row with its own revision. Writers are serialized by `BEGIN IMMEDIATE` and take revisions in statement order, so revisions become visible in commit order, and within one write an item's change precedes its job's.
+Written at the user's request before deciding Q3; the user chose latest-state paging, two snapshots, and to leave cursors from another database undetected (C38). The store (T19) already fixes two facts that every option builds on. Every job, item and failure row carries its latest revision, and a removal leaves a tombstone row with its own revision. Writers are serialized by `BEGIN IMMEDIATE` and take revisions in statement order, so revisions become visible in commit order, and within one write an item's change precedes its job's.
 
 **Q3a, paging and coalescing.** Three ways to page:
 
