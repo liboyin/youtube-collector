@@ -2,7 +2,7 @@
 
 Download YouTube videos, playlists, and captions into a staging area, as a LAN-only HTTP service. [DESIGN.md](DESIGN.md) owns the requirements and design; [TODO.md](TODO.md) owns outstanding work; [AGENTS.md](AGENTS.md) owns working standards.
 
-**Status:** the development environment and the application's building blocks exist and are tested (URL parsing, caption matching, the staging layer, the SQLite store, the yt-dlp and caption adapters, the worker and the reconciliation thread; [DESIGN section 14](DESIGN.md#14-architecture)). The change feed, the HTTP API and the service entrypoint are not implemented yet, so the service cannot run. The sections below cover building, configuring and testing the repository.
+**Status:** the development environment and the application's building blocks exist and are tested (URL parsing, caption matching, the staging layer, the SQLite store with its change feed, the yt-dlp and caption adapters, the worker, the reconciliation thread and long-poll wake-ups; [DESIGN section 14](DESIGN.md#14-architecture)). The HTTP API and the service entrypoint are not implemented yet, so the service cannot run. The sections below cover building, configuring and testing the repository.
 
 ## Security / trust model
 

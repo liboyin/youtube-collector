@@ -24,7 +24,7 @@ Use the [grouped task execution skill](.agents/skills/grouped-task-execution/SKI
 
 Tasks T10 and T13 come from the 2026-11-07 project review of `ca869a8`, whose decisions are C22–C32 in [DESIGN section 11](DESIGN.md#11-decisions-agreed-in-discussion-2026-11-06). Tasks T15–T25 are the application work that T9 planned ([record](completed_work/T9.md)). Each compact entry is expanded into a full boundary under [Execution boundaries](#execution-boundaries) before it is implemented. Image builds and devcontainer creation need a Docker daemon, which the devcontainer lacks, so those checks run on the host and the user may need to perform them; `docker compose config` needs no daemon, so it can run here with a standalone Compose binary, which is not part of the repository: download it for the session from the Compose GitHub release and check it against the release's published SHA256.
 
-Recommended order: T23 can proceed now (C38 settled Q3), and T24 follows it; T25 needs T24 and the user's authorization; T10 collects host checks as tasks land; T14 waits for its revisit trigger.
+Recommended order: T24 can proceed now; T25 needs T24 and the user's authorization; T10 collects host checks as tasks land; T14 waits for its revisit trigger.
 
 Application modules live in `youtube_collector/`, one module per responsibility, with tests in `tests/` mirroring them (`tests/test_<module>.py`). Shared constraints for T15–T25: no test contacts YouTube or reads the Firefox profile, and every test keeps its files and SQLite databases in test-owned temporary directories ([AGENTS](AGENTS.md#test-guidelines)); threads and waits are driven by injected clocks and explicit signals; components take explicit parameters, and only T24 reads the environment.
 
@@ -47,7 +47,7 @@ Full boundaries of tasks accepted for implementation. Each moves into its comple
 - **T6** (narrow the FastAPI dependencies): implemented with `httpx2` instead of the proposed `httpx` for tests; gates and review passed. [Record](completed_work/T6.md).
 - **T7** (executable code standards): implemented; the `yt_dlp` and `pathlib_extensions` mypy override is deferred to the first import, as `pyproject.toml` describes; gates and review passed. [Record](completed_work/T7.md).
 - **T8** (slim runtime image): implemented with T3; the runtime image's contents and size (287 MB) were checked on the host (amd64). [Record](completed_work/T8.md).
-- **T9** (break the application work into tasks): planned as T15–T25; DESIGN Q3 stays open and blocks only T23 and T24. [Record](completed_work/T9.md).
+- **T9** (break the application work into tasks): planned as T15–T25; DESIGN Q3, then open and blocking only T23 and T24, was later settled as C38 (DESIGN section 11). [Record](completed_work/T9.md).
 - **T11** (gap-review fixes for T2–T8): implemented; the coverage gate refuses an interpreter that does not match `.python-version`; gates, mutation evidence and review passed. [Record](completed_work/T11.md).
 - **T13** (Compose project names): implemented; gates, simulated `docker compose config` and review passed; the host check is in T10. [Record](completed_work/T13.md).
 - **T15** (URL parsing): implemented; mutation evidence and review passed. [Record](completed_work/T15.md).
