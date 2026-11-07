@@ -39,11 +39,10 @@ warn_unused_configs = true
 warn_unused_ignores = true
 # Missing imports are errors, so a misspelt module or a missing stub fails the gate. Packages that
 # ship no type information get a narrow override when the application first imports them; adding
-# one earlier makes warn_unused_configs report an unused section on every run. yt_dlp joins this
-# list with the change that first imports it.
+# one earlier makes warn_unused_configs report an unused section on every run.
 
 [[tool.mypy.overrides]]
-module = ["pathlib_extensions.*"]  # ".*" also matches the package itself
+module = ["pathlib_extensions.*", "yt_dlp.*"]  # ".*" also matches the package itself
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
