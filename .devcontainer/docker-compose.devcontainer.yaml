@@ -7,6 +7,14 @@
 # it gets a throwaway staging volume, its own database volume and no browser profile (DESIGN
 # decision C28). The opt-in real-data configuration (real-data/) layers the real share and a
 # read-only profile back on top of this file.
+# The dev container's Compose project, which overrides the production name in ../docker-compose.yaml
+# because the last file's name wins. It is the name the dev container had before the service got its
+# own, so its dev_staging, dev_db and dev_persist volumes carry over. Dev Containers CLI 0.60 and later
+# reads it from the merged configuration; earlier versions fall back to the first Compose file's
+# directory, the repository root, which gives the same name. The real-data configuration layers on
+# this file and shares the project.
+name: youtube-collector
+
 services:
   app:
     build:

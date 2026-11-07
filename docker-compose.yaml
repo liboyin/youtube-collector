@@ -1,3 +1,8 @@
+# The production service's Compose project. The dev container's override sets its own name
+# (youtube-collector), so a `docker compose up` or `down` here never touches the dev container,
+# and the two can run on one Docker daemon (DESIGN decision C28, TODO T13).
+name: youtube-collector-service
+
 services:
   app:
     build:
