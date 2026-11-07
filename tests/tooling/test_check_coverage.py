@@ -3,6 +3,7 @@
 import json
 import shlex
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -44,7 +45,25 @@ def report(files):
     return {'files': {path: {'summary': data} for path, data in files.items()}, 'totals': totals}
 
 
-def run_gate(runner, *, coverage_report=None, pytest_status=0, threshold=None, args=()):
+def python3_version():
+    """Return the ``platform.python_version()`` of the ``python3`` the gate runs, and its path.
+
+    Returns:
+        The version string, such as ``3.14.4``, and the interpreter's path.
+    """
+    python3 = shutil.which('python3')
+    assert python3 is not None, 'python3 is required by the gate script'
+    probe = subprocess.run(
+        [python3, '-c', 'import platform; print(platform.python_version())'],
+        check=True, capture_output=True, text=True,
+    )
+    return probe.stdout.strip(), python3
+
+
+MATCHING_PIN = object()
+
+
+def run_gate(runner, *, coverage_report=None, pytest_status=0, threshold=None, args=(), python_version=MATCHING_PIN):
     """Run the gate through the shared owned-subprocess runner with a ``pytest`` stub first on ``PATH``.
 
     The stub never runs tests: it records its arguments, copies the synthetic report (if any) to
@@ -56,12 +75,17 @@ def run_gate(runner, *, coverage_report=None, pytest_status=0, threshold=None, a
         pytest_status: Exit status of the stub.
         threshold: ``COVERAGE_THRESHOLD`` value, or None to leave it unset.
         args: Arguments forwarded to the gate.
+        python_version: Content of the ``.python-version`` written to the working directory; by
+            default the major and minor version of the gate's ``python3``, or None to write no file.
 
     Returns:
         The completed process and the stub's recorded arguments, or None if the stub never ran.
     """
-    python3 = shutil.which('python3')
-    assert python3 is not None, 'python3 is required by the gate script'
+    actual, python3 = python3_version()
+    if python_version is MATCHING_PIN:
+        python_version = '.'.join(actual.split('.')[:2]) + '\n'
+    if python_version is not None:
+        (runner.cwd / '.python-version').write_text(python_version, encoding='utf-8')
     stub_dir = runner.cwd / 'bin'
     stub_dir.mkdir()
     invocations = runner.cwd / 'pytest-invocation'
@@ -108,6 +132,49 @@ def test_invalid_threshold_fails_clearly_without_running_pytest(run_shell_script
     assert result.stderr.startswith('check-coverage: COVERAGE_THRESHOLD')
     assert repr(threshold) in result.stderr
     assert result.stdout == ''
+
+
+def test_matching_pins_run_pytest(run_shell_script):
+    """A full-version pin equal to the interpreter, after comment and blank lines, lets the gate run pytest."""
+    actual, _ = python3_version()
+
+    result, recorded = run_gate(run_shell_script, coverage_report=PASSING_REPORT, python_version=f'# pin\n\n{actual}\n')
+
+    assert recorded is not None
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize('pin_kind', ['other-major', 'longer-minor-prefix', 'other-patch'])
+def test_interpreter_not_matching_the_pin_fails_without_running_pytest(run_shell_script, pin_kind):
+    """A pin naming another version, a shorter minor that is only a string prefix, or another patch fails first."""
+    actual, _ = python3_version()
+    major, minor = actual.split('.')[:2]
+    pin = {
+        'other-major': f'{int(major) + 1}.{minor}',
+        # '3.1' is a string prefix of '3.14.4' but names a different minor version.
+        'longer-minor-prefix': f'{major}.{minor[:-1]}' if len(minor) > 1 else f'{major}.{minor}9',
+        'other-patch': f'{major}.{minor}.9999',
+    }[pin_kind]
+
+    result, recorded = run_gate(run_shell_script, coverage_report=PASSING_REPORT, python_version=f'{pin}\n')
+
+    assert recorded is None
+    assert result.returncode != 0
+    assert result.stderr.startswith(f'check-coverage: python3 is Python {actual}, but .python-version pins {pin};')
+    assert result.stdout == ''
+
+
+@pytest.mark.parametrize(('python_version', 'message'), [
+    (None, 'check-coverage: cannot read .python-version'),
+    ('# no version here\n\n', 'check-coverage: .python-version names no Python version'),
+], ids=['missing', 'empty'])
+def test_unusable_python_version_file_fails_without_running_pytest(run_shell_script, python_version, message):
+    """A missing .python-version, or one without a version line, stops the gate before pytest runs."""
+    result, recorded = run_gate(run_shell_script, coverage_report=PASSING_REPORT, python_version=python_version)
+
+    assert recorded is None
+    assert result.returncode != 0
+    assert result.stderr.startswith(message)
 
 
 @pytest.mark.parametrize(

@@ -2,7 +2,7 @@
 
 This document owns the product requirements, system design, product contracts and accepted user decisions. [README](README.md) covers setup and operation; [TODO](TODO.md) owns outstanding work and unresolved choices; [AGENTS](AGENTS.md) and the repository skills own working procedures.
 
-Status: accepted requirements, written 2026-11-06 as a product requirements document (originally `PRD.md`) in a design discussion held in the `youtube-whisperer` repository. They include assumptions that stand unless the user objects. **Nothing here is implemented yet**: until implementation, every section describes intended behavior, not current behavior. As components are built, record their architecture here, and record later decisions after C21 with new IDs.
+Status: accepted requirements, written 2026-11-06 as a product requirements document (originally `PRD.md`) in a design discussion held in the `youtube-whisperer` repository. They include assumptions that stand unless the user objects. **No application behavior is implemented yet**: sections 5, 6 and 10 describe intended behavior, not current behavior, while section 7 records which deployment and development-environment parts the scaffolding tasks have implemented. As components are built, record their architecture here, and record later decisions after C21 with new IDs.
 
 Requirement words (MUST, SHOULD, MAY) follow BCP 14. Behavior inherited from `youtube-whisperer` cites that project at revision `474f5dc` (the "source revision"); it describes what the code did there, which the collector reimplements rather than imports.
 

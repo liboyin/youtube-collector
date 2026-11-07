@@ -12,6 +12,9 @@
 # Environment:
 #   COVERAGE_THRESHOLD  Minimum percentage per file and for the total, from 0 to 100 inclusive.
 #                       Defaults to 80 when unset or empty; an invalid value fails before pytest runs.
+#
+# Run from the repository root: the gate also refuses to run unless python3 matches the version
+# that .python-version pins.
 set -uo pipefail
 
 threshold="${COVERAGE_THRESHOLD:-80}"
@@ -29,6 +32,31 @@ except ValueError:
 # The chained comparison is false for NaN and both infinities, so it also enforces finiteness.
 if not 0 <= threshold <= 100:
     sys.exit(f"check-coverage: COVERAGE_THRESHOLD must be a number from 0 to 100, got {raw_threshold!r}")
+PY
+
+# Run the suite only on the interpreter the repository pins. A dev container built before a
+# Python upgrade keeps its old venv, and the suite would pass there on the wrong interpreter, so
+# the gate refuses instead. .python-version is read from the working directory, which is the
+# repository root when the gate runs; python3 is the PATH interpreter, which in the dev container
+# is the venv that also provides pytest. A pin such as 3.14 accepts any 3.14.x; a full version
+# such as 3.14.4 must match exactly.
+python3 - <<'PY' || exit 1
+"""Exit with a message unless python3 matches the .python-version pin in the working directory."""
+import platform
+import sys
+from pathlib import Path
+
+try:
+    lines = Path('.python-version').read_text(encoding='utf-8').splitlines()
+except OSError as error:
+    sys.exit(f"check-coverage: cannot read .python-version ({error.strerror}); run the gate from the repository root")
+pins = [line.strip() for line in lines if line.strip() and not line.lstrip().startswith('#')]
+if not pins:
+    sys.exit("check-coverage: .python-version names no Python version")
+pin, actual = pins[0], platform.python_version()
+if actual != pin and not actual.startswith(f'{pin}.'):
+    sys.exit(f"check-coverage: python3 is Python {actual}, but .python-version pins {pin}; "
+             "rebuild the dev container so its venv uses the pinned interpreter")
 PY
 
 report="$(mktemp -t coverage-XXXXXXXX.json)"
