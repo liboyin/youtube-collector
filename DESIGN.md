@@ -389,5 +389,6 @@ Implemented (pure or filesystem-only building blocks; nothing composes them into
 | `youtube` | yt-dlp adapter: playlist expansion, one metadata extraction per video reused for its MP4 download, progress, pacing options and Firefox cookie detection (5.3, 5.5, 5.11) | [T20](completed_work/T20.md) |
 | `captions` | Caption adapter: lists tracks, selects one with `languages`, fetches SRT, with 10 s connect and 30 s read timeouts (5.6, D38) | [T20](completed_work/T20.md) |
 | `worker` | The YouTube worker thread: round-robin units, the marker pause, `NEVER` checks before network work, staged downloads, caption outcomes by job kind, throttled progress and restart recovery (5.3, 5.4, 5.7, 5.10, 5.12, 5.13) | [T21](completed_work/T21.md) |
+| `reconcile` | The reconciliation thread: periodic and requested passes that remove items whose recorded files are gone and finished jobs left with nothing, with the marker checked before and after probing; cached marker results and pass times that the API reads without touching the share (5.8, 5.13, 5.14, C25, C26) | [T22](completed_work/T22.md) |
 
-Planned in [TODO](TODO.md#active-backlog): reconciliation (T22), the change feed and long-poll notification (T23), and the HTTP API, configuration and entrypoint (T24).
+Planned in [TODO](TODO.md#active-backlog): the change feed and long-poll notification (T23), and the HTTP API, configuration and entrypoint (T24).
