@@ -15,7 +15,7 @@ Link to the owning document instead of duplicating its procedure. Skills and oth
 # Scope and Decisions
 
 - If not running in a Docker container, stop and confirm with the user before continuing.
-- This repository assumes execution inside a devcontainer with harness permissions set to Full Access or bypass. Until it has its own devcontainer, work runs inside the `youtube-whisperer` devcontainer. If the active harness imposes restrictions, follow its enforced policy and report the configuration mismatch.
+- This repository assumes execution inside its own devcontainer (`.devcontainer/`) with harness permissions set to Full Access or bypass. If the active harness imposes restrictions, follow its enforced policy and report the configuration mismatch.
 - Read relevant code and documentation and inspect repository status before editing. Reuse guidance already read in the current task while it remains unchanged.
 - Each change MUST have a boundary: intent, dependencies, non-goals, validation strategy, and done criteria. Revalidate written tasks against the affected code; do not implement them mechanically or broaden their material scope unilaterally.
 - State assumptions. Confirm unresolved choices that materially affect scope, architecture, dataflow, correctness, security, or user-visible behavior before dependent work; continue independent work where possible.

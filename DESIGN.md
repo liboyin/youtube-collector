@@ -67,7 +67,7 @@ Request body fields:
 
 - `url` (required): a single-video URL or a playlist URL (5.2).
 - `languages`: a non-empty, ordered list of caption language candidates (5.6). Each entry MUST be a well-formed BCP 47 tag; there is no whitelist of supported languages. The list expresses alternatives for one language and produces at most one SRT.
-- `idempotency_key` (optional): a caller-chosen string. A submission whose key matches a job still present in the status table returns that job instead of creating a new one. Reusing a key with a different body MUST return 409.
+- `idempotency_key` (optional): a caller-chosen string. A submission whose key matches a retained key returns that key's job instead of creating a new one. Reusing a key with a different body MUST return 409. A key MUST be retained while its job is in the status table and for at least seven days after the job is removed, whatever the tombstone retention setting (5.10) is (decision C24); what a replay returns after removal is open (section 12).
 
 A valid submission returns 202 with the job's initial representation and its identifier, and does not contact YouTube. The API validates URLs syntactically only, because only the worker thread may talk to YouTube (5.3). Malformed bodies, unsupported URLs and channel URLs return 422.
 
@@ -95,6 +95,7 @@ A watch URL that carries both `v=` and `list=` MUST be treated as the single vid
 - The source revision's reuse of legacy title-only files is dropped. The collector only ever looks for and writes ID-tagged names.
 - A video that appears in several playlists, or both in a playlist and at the root, is downloaded separately into each location. Duplication is accepted.
 - Every write uses the `NEVER` policy, checked per artifact before any network work: an existing MP4 is not downloaded again, and an existing SRT is not fetched again. Each artifact is judged independently, so a job can skip an existing MP4 and still fetch its missing SRT.
+- An existing artifact is recognized by its video ID within the destination directory, as a file named `<anything> [videoID].mp4` or `<anything> [videoID].srt`, whatever its title part says (decision C23). A video renamed on YouTube therefore still counts as existing, and the check needs only the ID, which the URL or the persisted playlist entry supplies. Matching treats the ID literally, not as a glob pattern. Handling of several matching files and keeping MP4 and SRT names consistent are open (section 12).
 - Publication MUST be atomic, as at the source revision: each artifact is written inside a fresh hidden `.staging-<random>` directory beside its destination, and only a complete file is published, using pathlib-extensions' `StagedFile`. A failure or interruption leaves previous output intact and removes its own stage directory. A stage directory left by an abrupt process exit is not scavenged automatically; tools that move files out of staging SHOULD skip hidden directories.
 
 ### 5.5 Media
@@ -140,11 +141,11 @@ The status table holds jobs and items. Lifetime rules:
 |---|---|
 | Item that is queued or running | It finishes |
 | Item that is done or failed | None of the files it produced or found existing remains in staging |
-| Job | It has no items left and no uncleared failure refers to it |
+| Job | It is `finished`, has no items left, and no uncleared failure refers to it |
 
-Only files the collector itself wrote or found as its own artifact count. Other files beside them, such as an SRT written by `youtube-whisperer`'s transcriber, do not keep a record alive. An item that produced no files, such as a `captions` item with `unavailable` captions or a failed item, is removed at the next reconciliation; its failure record (5.9) survives independently.
+Only files the collector itself wrote or found as its own artifact count. Other files beside them, such as an SRT written by `youtube-whisperer`'s transcriber, do not keep a record alive. An item that produced no files, such as a `captions` item with `unavailable` captions or a failed item, is removed at the next reconciliation; its failure record (5.9) survives independently. A job that is `queued`, `expanding` or `running` is never removed, even before it has any items; the `finished` condition exists because a playlist job has no items until expansion persists them (decision C26).
 
-Because SMB mounts do not deliver file-change notifications, the collector MUST reconcile by checking file existence: on every `GET /jobs` request, and periodically on a separate thread from the YouTube worker. With 10 to 20 files in staging this costs a few dozen metadata calls.
+Because SMB mounts do not deliver file-change notifications, the collector MUST reconcile by checking file existence: when `GET /jobs` is requested, and periodically on a separate thread from the YouTube worker. With 10 to 20 files in staging this costs a few dozen metadata calls. A stalled SMB share can block a metadata call indefinitely, and a thread timeout does not cancel blocked I/O, so API request handling MUST NOT perform staging filesystem calls itself and MUST stay responsive while the share is stalled (decision C25). `GET /jobs` therefore asks the reconciliation thread for a pass and returns the status table together with the time of the last completed reconciliation; at most one staging probe is outstanding at a time, so repeated requests cannot accumulate blocked threads. How long `GET /jobs` waits for a requested pass is open (section 12).
 
 Reconciliation MUST NOT delete records when the staging area itself is unavailable; see 5.13.
 
@@ -175,7 +176,7 @@ Every change to a job, item or failure, including removal, MUST stamp the record
 - `GET /jobs/changes?since=<cursor>&wait=<seconds>` returns the changes with revisions greater than `since`, oldest first and coalesced to the latest state of each record. It returns immediately when changes exist; otherwise it waits up to `wait` seconds and then returns an empty page. The response carries the next cursor and whether more changes remain.
 - `GET /jobs/{id}?since=<revision>&wait=<seconds>` waits the same way for one job.
 - `wait` MUST be capped (assumed 60 seconds) so proxies and clients do not cut off idle requests.
-- Tombstones are kept for a configured period (assumed 7 days). A cursor older than the oldest retained tombstone MUST return 410, telling the caller to resynchronize from `GET /jobs`.
+- Tombstones are kept for a configured period (assumed 7 days). Pruning records the highest pruned revision `P` durably; a request with `since < P` MUST return 410, telling the caller to resynchronize from `GET /jobs`, while `since >= P` has lost nothing (decision C27). How a resynchronizing caller obtains a consistent snapshot and cursor, including failures, and how pagination interacts with coalescing are open (section 12).
 - A running item's progress reports downloaded bytes, plus total bytes and a percentage whenever yt-dlp knows the total size.
 - Download progress updates MUST be throttled (assumed at most once a second per item, plus every state change), so waiting callers are not woken by every progress tick.
 
@@ -195,6 +196,7 @@ An unmounted SMB share can look like an empty directory. Reconciliation would th
 
 - Before reconciling, and before starting each item, the collector MUST check that the marker exists.
 - While the marker is missing or the staging root cannot be read, the worker and reconciliation MUST pause without changing any record: no items start, fail or get removed. Both resume on their own once the marker is visible again. An item already running when the share disappears fails with category `filesystem`, as any write failure does.
+- A stalled share, where filesystem calls block instead of failing, is accepted to stall the YouTube worker or the reconciliation thread for as long as the stall lasts; it MUST NOT stall the API (5.8, decision C25).
 - `GET /health` reports the paused state (5.14), and the collector logs a warning when it pauses and when it resumes.
 - The collector never creates the marker itself, because creating it on an unmounted mount point would defeat the check.
 
@@ -207,7 +209,7 @@ An unmounted SMB share can look like an empty directory. Reconciliation would th
 - whether the worker and reconciliation threads are alive
 - the installed yt-dlp version
 
-It returns 200 when everything is healthy and 503 otherwise, with the same body in both cases.
+It returns 200 when everything is healthy and 503 otherwise, with the same body in both cases. The staging result is the most recent cached check, reported with its age, so `/health` itself never touches the share and stays responsive during an SMB stall (decision C25). The age beyond which a cached result counts as unhealthy is open (section 12).
 
 ## 6. HTTP API summary
 
@@ -216,7 +218,7 @@ It returns 200 when everything is healthy and 503 otherwise, with the same body 
 | `POST /jobs/videos` | Submit a media job |
 | `POST /jobs/captions` | Submit a captions job |
 | `POST /jobs/videos-with-captions` | Submit a media-and-captions job |
-| `GET /jobs` | The status table: every job with its items, reconciled with staging first |
+| `GET /jobs` | The status table: every job with its items, after requesting a reconciliation pass, with the time of the last completed one (5.8) |
 | `GET /jobs/{id}` | One job; optional `since` and `wait` for long polling |
 | `GET /jobs/changes` | The change feed; `since` and `wait` |
 | `GET /failures` | All uncleared failures, oldest first |
@@ -232,10 +234,15 @@ An unknown job or failure returns 404. Validation errors return 422. Unexpected 
 - The SQLite database MUST live on a Docker named volume, never in `ASSETS_DIR`. Container storage is local, unlike the SMB-mounted staging area where SQLite locking is unreliable, and a named volume survives container recreation, including the image rebuilds that update yt-dlp. SQLite SHOULD run in WAL mode.
 - `ASSETS_DIR` is bind-mounted as the staging area, and `FIREFOX_PROFILE_DIR` as the cookie profile, as in `youtube-whisperer`'s Compose file.
 - The service is unauthenticated and LAN-only, as decision D5 states for `youtube-whisperer`. It MUST NOT be exposed to the public internet.
-- Dependencies are locked with uv and installed through the shared `docker-build-common` helpers, as in `youtube-whisperer` (D50, D52). yt-dlp breaks whenever YouTube changes and ships fixes often, so the project MUST provide a script that runs `uv lock --upgrade-package yt-dlp` and rebuilds the image, following `youtube-whisperer`'s `update-dependencies.sh`. Other dependencies keep their locked versions.
+- Dependencies are locked with uv and installed through the shared `docker-build-common` helpers, as in `youtube-whisperer` (D50, D52). yt-dlp breaks whenever YouTube changes and ships fixes often, so the project MUST provide a script that runs `uv lock --upgrade-package yt-dlp` and applies the new lock to the devcontainer's venv, following `youtube-whisperer`'s `update-dependencies.sh`. Rebuilding the image is a separate step run on the host, because the devcontainer has no Docker (decision C29, superseding C19's "rebuilds the image"). Other dependencies keep their locked versions.
+- `pyproject.toml` declares no upper version bounds. `uv.lock` makes builds reproducible, and every full upgrade's `uv.lock` diff is reviewed before commit (decision C32).
+- The image is built from `ubuntu:26.04`, whose distro `python3` is Python 3.14, keeping the distro-Python and `ubuntu`-user design (decision C22, superseding T1's `ubuntu:24.04` and Python 3.12). Until that migration lands, the image remains as T1 built it.
+- The devcontainer MUST NOT inherit the production mounts (decision C28). Its default configuration replaces them with development-only storage: a throwaway staging volume, its own database volume and no browser profile, whatever `.env` sets. A second, explicitly named configuration (planned as `.devcontainer/real-data/`, labelled "REAL DATA") adds the real staging share and a read-only Firefox profile back for sessions the user deliberately opens; it fails to start unless `ASSETS_DIR` and `FIREFOX_PROFILE_DIR` are set, sets `COLLECTOR_REAL_DATA=1`, and keeps the development database, because a development collector and the production service sharing one SQLite file could corrupt each other's records. Opening it authorizes nothing: each run against real YouTube still needs the user's authorization for that run, and tests still use only test-owned storage. The Compose service has no fixed `container_name`, so the devcontainer and the production service can coexist on one Docker daemon.
+- The production Compose service mounts the Firefox profile read-only; yt-dlp copies `cookies.sqlite` to a temporary directory before opening it (verified in the locked yt-dlp source on 2026-11-07; the mount itself is unverified).
+- The devcontainer uses VS Code's SSH agent forwarding instead of bind-mounting `~/.ssh`, so private key files are not present in the container; processes in it can still use the forwarded agent while it is connected (decision C31).
 - The user creates the staging marker (5.13) once, at the root of the share.
 
-Implemented by T1: the Dockerfile's `runtime` and `dev` targets, built from `ubuntu:24.04` with the shared helpers, a uv-locked venv at `/opt/venv`, ffmpeg and Deno; the single Compose service `app` with the staging, Firefox-profile and `collector_db` mounts (the database directory is `/var/lib/youtube-collector`); and the devcontainer, whose creation hook checks the lock offline. `./update-dependencies.sh yt-dlp` fulfils C19's yt-dlp update; rebuilding the image deploys it. The service entrypoint and published port are added with the API. [README](README.md) owns setup and configuration.
+Implemented by T1: the Dockerfile's `runtime` and `dev` targets, built from `ubuntu:24.04` with the shared helpers, a uv-locked venv at `/opt/venv`, ffmpeg and Deno; the single Compose service `app` with the staging, Firefox-profile and `collector_db` mounts (the database directory is `/var/lib/youtube-collector`); and the devcontainer, whose creation hook checks the lock offline. `./update-dependencies.sh yt-dlp` fulfils the yt-dlp update as C29 restates it; rebuilding the image on the host deploys it. T1 predates decisions C22, C28, C31 and C32; [TODO](TODO.md) tracks the changes they require. The service entrypoint and published port are added with the API. [README](README.md) owns setup and configuration.
 
 Configuration (environment variable names are to be chosen during implementation):
 
@@ -288,7 +295,7 @@ Switching the orchestrator over is a later, separate phase. The collector SHOULD
 1. The orchestrator submits a `videos-with-captions` job with an `idempotency_key` it has recorded beforehand, so a crash between submitting and recording the job ID cannot create a duplicate.
 2. It follows `GET /jobs/changes` from a persisted cursor.
 3. For each finished item whose captions are `unavailable` or `error`, it maps the item's staging path to its own mount of the same directory and requests transcription. The decision moves out of `YouTubeWorker.process_video`.
-4. It treats a missing job (404) or a tombstone as "nothing left to do", and failures as information to record. It does not clear them.
+4. It treats a missing job (404) as "nothing left to do", and failures as information to record. It does not clear them. A tombstone carries a final outcome: the orchestrator records that outcome and any failures it reports, but never requests transcription from a tombstone, because the item's files have already left staging (decision C30).
 
 Paths in responses are relative to the staging root, so the collector and orchestrator may mount the staging area at different container paths.
 
@@ -314,13 +321,40 @@ Paths in responses are relative to the staging root, so the collector and orches
 | C16 | A watch URL with both `v=` and `list=` is the single video; playlists are submitted by `/playlist?list=` URL. |
 | C17 | A marker file at the staging root guards against an unmounted share; work pauses while it is missing. |
 | C18 | `GET /health` reports database, staging marker, thread liveness and yt-dlp version. |
-| C19 | A script updates yt-dlp alone and rebuilds the image. |
+| C19 | A script updates yt-dlp alone and rebuilds the image. Superseded by C29. |
 | C20 | Progress reports bytes, and a percentage when the total is known. |
 | C21 | YouTube Mix playlists are rejected. |
 
+Decisions from the project review (2026-11-07), made by the user after two independent reviews of revision `ca869a8`:
+
+| ID | Decision |
+|---|---|
+| C22 | Build from `ubuntu:26.04` with its distro Python 3.14, rather than `python:3.14-slim`, to keep the distro-Python and `ubuntu`-user design. Supersedes T1's `ubuntu:24.04` and Python 3.12 direction. |
+| C23 | Recognize an existing artifact by video ID within its destination directory, including after the video's title changes. |
+| C24 | Retain idempotency keys for at least seven days after their job is removed. |
+| C25 | Keep the API responsive during SMB stalls: no staging filesystem calls on the API path, cached staging health reported with its age, and a stalled worker or reconciliation thread accepted. |
+| C26 | Reconciliation removes only `finished` jobs. |
+| C27 | 410 applies when `since` is below a durably recorded pruned-through revision. |
+| C28 | The devcontainer uses development-only storage by default; a separate, explicitly named real-data configuration mounts the real share and a read-only Firefox profile, never the production database (section 7). The fixed Compose `container_name` is removed. |
+| C29 | Supersedes C19: the update script updates `uv.lock` and the devcontainer's venv; rebuilding the image is a separate host step. |
+| C30 | The orchestrator records the outcome and failures carried by a tombstone but never requests transcription from it. |
+| C31 | The devcontainer uses SSH agent forwarding instead of a `~/.ssh` bind mount. |
+| C32 | No upper bounds on dependencies; rely on `uv.lock` and review the lock diff on every full upgrade. |
+
+C26 and C27 correct contradictions that both reviews found, rather than choosing between alternatives.
+
 ## 12. Open questions
 
-None at present. New questions raised in review are recorded here until decided.
+These contract details were raised in the 2026-11-07 review and MUST be settled before the application tasks that depend on them. Each lists a proposal, which is not accepted.
+
+| ID | Question | Proposal |
+|---|---|---|
+| Q1 | Artifact recognition (C23): what happens when several files in one directory carry the same video ID and suffix, and how is the SRT named when an existing MP4 carries an older title? | Any match counts as existing. A new SRT takes the stem of the existing MP4 when exactly one exists, so the pair stays together; otherwise it uses the current title. |
+| Q2 | Idempotency (C24): what does replaying a key return after its job is removed, and what happens once the key expires? | The retained key stores the job's final representation, because its tombstone may be pruned first; a replay returns that representation with 200. A same-key, different-body request still returns 409 while the key is retained. An expired key is forgotten, so a reuse creates a new job. |
+| Q3 | Change-feed recovery (C27): how does a caller resynchronize consistently, including failures, and how do pages coalesce? | `GET /jobs` and `GET /failures` each return the revision their snapshot was read at, from one transaction. A change page lists each changed record once, at its latest revision, ordered by that revision; the next cursor is the last revision on the page. A record that changes again reappears on a later page. |
+| Q4 | SMB stalls (C25): how long does `GET /jobs` wait for a requested reconciliation, and when does a cached staging result count as stale? | Wait up to a few seconds, then return the current table with the last reconciliation time. Report 503 when the cached result is older than three reconciliation intervals. |
+| Q5 | Shutdown and resource ownership: what does SIGTERM do to a running download, what grace period applies, and which threads own which SQLite connections and transactions? | On SIGTERM, stop taking items, let the current yt-dlp call finish or be abandoned at the grace period, and rely on restart recovery (5.12). Each thread owns its own connection, and every write is one short transaction that also assigns the revision. |
+| Q6 | Optional hardening: should playlists be capped in size, and should the API validate the `Host` header against DNS rebinding? | Proposals only; neither is a demonstrated defect. |
 
 ## 13. Assumptions
 

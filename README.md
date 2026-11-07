@@ -1,6 +1,6 @@
 # youtube-collector
 
-Download YouTube videos, playlists and captions into a staging area, as a LAN-only HTTP service. [DESIGN.md](DESIGN.md) owns the requirements and design; [TODO.md](TODO.md) owns outstanding work; [AGENTS.md](AGENTS.md) owns working standards.
+Download YouTube videos, playlists, and captions into a staging area, as a LAN-only HTTP service. [DESIGN.md](DESIGN.md) owns the requirements and design; [TODO.md](TODO.md) owns outstanding work; [AGENTS.md](AGENTS.md) owns working standards.
 
 **Status:** the development environment exists, but the service itself is not implemented yet. The sections below cover building, configuring and testing the repository.
 
