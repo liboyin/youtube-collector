@@ -4,7 +4,7 @@ Use this compact template for the [review procedure](../SKILL.md#procedure). Kee
 
 This is the working evidence record. When closing TODO tasks, the main agent preserves its essential contents under [TODO's completion-record procedure](../../../../TODO.md#maintaining-this-plan), linking shared evidence when several tasks used one review record.
 
-- **Boundary:** intent, dependencies, implementation direction, affected compatibility surface, non-goals, validation, acceptance and done criteria for each task; write the accepted boundary here or link its sole owning location. State shared group constraints once and give each task distinct acceptance criteria. Distinguish existing caller contracts from new runtime validation requirements.
+- **Boundary:** intent, dependencies, implementation direction, affected compatibility surface, non-goals, validation, acceptance and done criteria for each task; link the accepted boundary in TODO, which owns it, instead of copying it here. State shared group constraints once and give each task distinct acceptance criteria. Distinguish existing caller contracts from new runtime validation requirements.
 - **Target:** starting and candidate revisions/range, in-scope paths and uncommitted inputs; full or follow-up scope and prior target when applicable.
 - **Reviewer:** agent/session ID, model/effort; replacement reason and transferred findings when applicable.
 - **Checks:** commands, results, relevant non-secret environment summary, and baseline selection rationale. Include the integration-coverage decision when deciding whether a further group review is needed.

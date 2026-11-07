@@ -20,6 +20,7 @@ Link to the owning document instead of duplicating its procedure. Skills and oth
 - Each change MUST have a boundary: intent, dependencies, non-goals, validation strategy, and done criteria. Revalidate written tasks against the affected code; do not implement them mechanically or broaden their material scope unilaterally.
 - State assumptions. Confirm unresolved choices that materially affect scope, architecture, dataflow, correctness, security, or user-visible behavior before dependent work; continue independent work where possible.
 - Accepted decisions and user authorization persist. Do not ask again about settled choices. Document superseding decisions and their reasoning before committing the affected change.
+- The project is developed on several machines, which share only the Git repository. Task boundaries, decisions, open review findings and completion evidence MUST live in committed files. Working records, session scratch, agent memory and tool history are machine-local conveniences: committed files MUST NOT refer to them by path, and anything every machine needs MUST be promoted into the document that owns it.
 - Non-material assumptions MAY be made when repository evidence supports them and they preserve the requested outcome. Name the assumption, evidence, and effect in the handoff.
 - For a group of related TODO tasks, follow the recommended [grouped task execution workflow](.agents/skills/grouped-task-execution/SKILL.md), unless the user specifies another approach.
 
