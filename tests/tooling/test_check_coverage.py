@@ -96,7 +96,9 @@ PASSING_REPORT = report({'pkg/a.py': summary(100, 90, 20, 18), 'pkg/b.py': summa
 DEFAULT_THRESHOLDS = pytest.mark.parametrize('threshold', [None, '', '80'], ids=['unset', 'empty', 'explicit'])
 
 
-@pytest.mark.parametrize('threshold', ['nan', 'NaN', 'inf', '-inf', 'infinity', '-1', '-0.5', '100.1', '1e3', 'eighty', '80%'])
+@pytest.mark.parametrize(
+    'threshold', ['nan', 'NaN', 'inf', '-inf', 'infinity', '-1', '-0.5', '100.1', '1e3', 'eighty', '80%'],
+)
 def test_invalid_threshold_fails_clearly_without_running_pytest(run_shell_script, threshold):
     """Non-numeric, non-finite and out-of-range thresholds exit non-zero with a message before pytest runs."""
     result, recorded = run_gate(run_shell_script, coverage_report=PASSING_REPORT, threshold=threshold)

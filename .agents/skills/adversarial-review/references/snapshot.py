@@ -140,7 +140,7 @@ def collect_snapshot(directory: Path, untracked: list[str]) -> dict[str, object]
     index = path_records(git(root, 'ls-files', '--stage', '-z'))
     names = [record.split('\t', 1)[1] for record in index]
     # The root index does not describe a submodule's contents, which `git status` scans recursively.
-    gitlinks = [name for record, name in zip(index, names) if record.startswith('160000 ')]
+    gitlinks = [name for record, name in zip(index, names, strict=True) if record.startswith('160000 ')]
     if gitlinks:
         raise ValueError(f'submodules are unsupported, since Git would scan their working trees: {gitlinks!r}')
     links = symlinked_ancestors(root, names)
