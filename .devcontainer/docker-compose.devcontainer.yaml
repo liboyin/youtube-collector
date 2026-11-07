@@ -11,10 +11,21 @@ services:
   app:
     build:
       target: dev
+    # State that must outlive the container lives on the dev_persist volume, which survives
+    # sessions and rebuilds; only `docker compose down -v` deletes it. The creation hook creates
+    # these directories. CLAUDE_CONFIG_DIR also moves ~/.claude.json, so Claude Code's settings,
+    # history, memory and sign-in persist; CODEX_HOME does the same for Codex.
+    environment:
+      # Default home for review working records and test evidence.
+      COLLECTOR_EVIDENCE_DIR: /home/ubuntu/persist/evidence
+      CLAUDE_CONFIG_DIR: /home/ubuntu/persist/claude
+      CODEX_HOME: /home/ubuntu/persist/codex
     volumes: !override
       - dev_staging:/workspaces/youtube-collector/assets
       - dev_db:/var/lib/youtube-collector
+      - dev_persist:/home/ubuntu/persist
 
 volumes:
   dev_staging:
   dev_db:
+  dev_persist:

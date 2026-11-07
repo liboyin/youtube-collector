@@ -105,6 +105,10 @@ RUN --mount=type=bind,from=build_common,target=/build-common \
     /build-common/apt_install.sh curl
 USER ubuntu
 
+# Mount point of the dev container's dev_persist volume (evidence, Claude Code and Codex state),
+# created by the runtime user so a new volume initializes writable for it.
+RUN install -d /home/ubuntu/persist
+
 # uv pip sync makes the venv match the export exactly, so this keeps the runtime packages,
 # adds the dev group, and replaces the regular project install with an editable one, which
 # the dev container's workspace bind mount needs.
