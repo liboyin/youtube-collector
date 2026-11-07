@@ -23,7 +23,8 @@
         // share Git config between host and container; SSH authentication uses the agent VS Code
         // forwards, so no key files are mounted (DESIGN decision C31)
         "source=${localEnv:HOME}/.gitconfig,target=/home/ubuntu/.gitconfig,type=bind,readonly",
-        // override .dockerignore to mount the entire workspace
+        // overlay the image's project directory with the whole workspace, including files the
+        // build context excludes
         "source=${localWorkspaceFolder},target=/workspaces/youtube-collector,type=bind"
     ],
     "customizations": {

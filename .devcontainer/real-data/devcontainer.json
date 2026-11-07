@@ -1,6 +1,6 @@
 {
-    // Opt-in configuration that mounts the REAL staging share and a read-only copy of the real
-    // Firefox profile (DESIGN decision C28). Opening it authorizes nothing: each run against real
+    // Opt-in configuration that mounts the REAL staging share and a read-only bind mount of the
+    // real Firefox profile (DESIGN decision C28). Opening it authorizes nothing: each run against real
     // YouTube still needs the user's authorization for that run, tests still use only
     // test-owned storage, and the database stays the development one. Identical to
     // ../devcontainer.json except for the name and the extra Compose file; keep them in step.
@@ -26,7 +26,8 @@
         // share Git config between host and container; SSH authentication uses the agent VS Code
         // forwards, so no key files are mounted (DESIGN decision C31)
         "source=${localEnv:HOME}/.gitconfig,target=/home/ubuntu/.gitconfig,type=bind,readonly",
-        // override .dockerignore to mount the entire workspace
+        // overlay the image's project directory with the whole workspace, including files the
+        // build context excludes
         "source=${localWorkspaceFolder},target=/workspaces/youtube-collector,type=bind"
     ],
     "customizations": {
