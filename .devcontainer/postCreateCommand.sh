@@ -12,7 +12,7 @@ if ! uv lock --check --offline; then
 fi
 # Directories on the dev_persist volume, which outlive the container; the Compose override sets
 # these variables. They must exist before the installers below write Claude Code and Codex state.
-for state_dir in "${COLLECTOR_EVIDENCE_DIR:?}" "${CLAUDE_CONFIG_DIR:?}" "${CODEX_HOME:?}"; do
+for state_dir in "${CLAUDE_CONFIG_DIR:?}" "${CODEX_HOME:?}"; do
     install -d -m 700 "$state_dir"
 done
 # Git over SSH authenticates through the agent VS Code forwards; no ~/.ssh is mounted (DESIGN

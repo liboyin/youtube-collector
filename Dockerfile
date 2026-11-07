@@ -105,7 +105,7 @@ RUN --mount=type=bind,from=build_common,target=/build-common \
     /build-common/apt_install.sh curl
 USER ubuntu
 
-# Mount point of the dev container's dev_persist volume (evidence, Claude Code and Codex state),
+# Mount point of the dev container's dev_persist volume (Claude Code and Codex state),
 # created by the runtime user so a new volume initializes writable for it.
 RUN install -d /home/ubuntu/persist
 
