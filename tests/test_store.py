@@ -333,6 +333,157 @@ def test_list_failures_returns_uncleared_failures_oldest_first(store):
     assert [f['message'] for f in store.list_failures()] == ['b']
 
 
+def test_jobs_snapshot_returns_the_status_table_with_its_revision(store):
+    """The status table comes with the revision it was read at (C38)."""
+    job = submit_video(store).job
+    snapshot = store.jobs_snapshot()
+    assert [record['id'] for record in snapshot.records] == [job['id']]
+    assert snapshot.records[0]['items'] == job['items']
+    assert snapshot.revision == store.current_revision()
+
+
+def test_failures_snapshot_returns_uncleared_failures_with_their_revision(store):
+    """Uncleared failures come with the revision they were read at (C38)."""
+    job = submit_playlist(store).job
+    store.fail_expansion(job['id'], failure(testee.Phase.EXPANDING))
+    snapshot = store.failures_snapshot()
+    assert snapshot.records == tuple(store.list_failures())
+    assert snapshot.revision == store.current_revision()
+
+
+def test_job_view_counts_item_changes_and_removals(store):
+    """A job's view revision rises with any of its items' changes, including removal."""
+    job = submit_video(store, kind=testee.JobKind.VIDEOS).job
+    item_id = job['items'][0]['id']
+    assert store.job_view(job['id']).revision == job['items'][0]['revision']
+    store.record_progress(item_id, 1, 2)
+    assert store.job_view(job['id']).revision == store.current_revision()
+    store.finish_item(item_id, media_done())
+    store.remove_items([item_id])
+    view = store.job_view(job['id'])
+    assert view.revision == store.current_revision()
+    assert view.job['items'] == []
+    assert store.job_view('missing') is None
+
+
+def test_job_view_of_a_playlist_without_items_uses_the_job_revision(store):
+    """A job with no items yet has its own revision as its view revision."""
+    job = submit_playlist(store).job
+    assert store.job_view(job['id']).revision == job['revision']
+
+
+def test_job_view_is_none_once_the_job_is_removed(store):
+    """A removed job has no view; its tombstone reaches callers through the feed."""
+    job = submit_playlist(store).job
+    expand(store, job['id'], [])
+    store.remove_finished_jobs()
+    assert store.job_view(job['id']) is None
+
+
+def test_changes_lists_each_record_once_at_its_latest_revision(store):
+    """Coalesced pages hold the latest state of each changed record, in revision order (C38)."""
+    job = submit_video(store, kind=testee.JobKind.VIDEOS).job
+    item_id = job['items'][0]['id']
+    store.start_item(item_id)
+    store.record_progress(item_id, 1, 10)
+    store.record_progress(item_id, 5, 10)
+    page = store.changes(0, 100)
+    assert [(e['kind'], e['id']) for e in page.entries] == [('job', job['id']), ('item', item_id)]
+    revisions = [e['revision'] for e in page.entries]
+    assert revisions == sorted(revisions)
+    assert page.entries[1]['record']['progress']['downloaded_bytes'] == 5
+    assert 'items' not in page.entries[0]['record']
+    assert (page.cursor, page.more) == (store.current_revision(), False)
+
+
+def test_changes_after_a_cursor_returns_only_later_changes(store):
+    """Only records changed after the cursor appear."""
+    first = submit_playlist(store, playlist_id='PLa').job
+    cursor = store.current_revision()
+    second = submit_playlist(store, playlist_id='PLb').job
+    page = store.changes(cursor, 100)
+    assert [e['id'] for e in page.entries] == [second['id']]
+    assert first['id'] not in [e['id'] for e in page.entries]
+
+
+def test_changes_include_tombstones_with_their_final_state(store):
+    """A removal appears as a removed entry holding the record's final state (DESIGN 5.10)."""
+    job = submit_playlist(store, idempotency_key='k', body='b').job
+    store.fail_expansion(job['id'], failure(testee.Phase.EXPANDING, message='gone'))
+    cursor = store.current_revision()
+    [cleared] = store.clear_failures()
+    store.remove_finished_jobs()
+    page = store.changes(cursor, 100)
+    assert [(e['kind'], e['removed']) for e in page.entries] == [('failure', True), ('job', True)]
+    assert page.entries[0]['record'] == cleared
+    assert page.entries[1]['record']['state'] == 'finished'
+
+
+def test_changes_page_by_limit_and_continue_from_the_cursor(store):
+    """A full page says more remain, and its cursor continues exactly where it stopped."""
+    for index in range(5):
+        submit_playlist(store, playlist_id=f'PL{index}')
+    first = store.changes(0, 2)
+    assert (len(first.entries), first.more) == (2, True)
+    second = store.changes(first.cursor, 2)
+    third = store.changes(second.cursor, 2)
+    assert (len(third.entries), third.more) == (1, False)
+    ids = [e['id'] for page in (first, second, third) for e in page.entries]
+    assert len(ids) == len(set(ids)) == 5
+    assert store.changes(third.cursor, 2) == testee.ChangePage((), third.cursor, False)
+    exact = store.changes(first.cursor, 3)
+    assert (len(exact.entries), exact.more) == (3, False)  # a page that is exactly full has no more
+
+
+def test_changes_merge_kinds_into_one_revision_order_across_pages(store):
+    """Entries of different kinds interleave by revision, also at page boundaries."""
+    job = submit_video(store).job
+    store.start_item(job['items'][0]['id'])
+    playlist = submit_playlist(store).job
+    store.fail_expansion(playlist['id'], failure(testee.Phase.EXPANDING))
+    seen = []
+    cursor = 0
+    while True:
+        page = store.changes(cursor, 1)
+        seen.extend((e['kind'], e['revision']) for e in page.entries)
+        cursor = page.cursor
+        if not page.more:
+            break
+    assert [revision for _, revision in seen] == sorted(revision for _, revision in seen)
+    assert [kind for kind, _ in seen] == ['item', 'job', 'job', 'failure']
+
+
+def test_changes_move_a_record_that_changes_while_paging_forward(store):
+    """A record that changes after its page was read reappears later, so its final state is never missed."""
+    first = submit_playlist(store, playlist_id='PLa').job
+    submit_playlist(store, playlist_id='PLb')
+    page = store.changes(0, 1)
+    assert page.entries[0]['id'] == first['id']
+    store.start_expansion(first['id'])
+    rest = store.changes(page.cursor, 10)
+    assert [e['id'] for e in rest.entries][-1] == first['id']
+    assert rest.entries[-1]['record']['state'] == 'expanding'
+
+
+def test_changes_reject_cursors_below_the_pruned_through_revision(store, clock):
+    """A cursor below P has missed pruned removals and gets CursorPruned; P itself is fine (C27)."""
+    job = submit_playlist(store).job
+    expand(store, job['id'], [])
+    store.remove_finished_jobs()
+    store.prune(0)
+    mark = store.pruned_through()
+    with pytest.raises(testee.CursorPruned) as raised:
+        store.changes(mark - 1, 10)
+    assert raised.value.pruned_through == mark
+    assert store.changes(mark, 10).entries == ()
+
+
+def test_changes_reject_a_limit_below_one(store):
+    """A page must be allowed at least one entry."""
+    with pytest.raises(ValueError):
+        store.changes(0, 0)
+
+
 def test_next_work_returns_nothing_without_work(store):
     """An empty store has no work."""
     assert store.next_work(0) is None

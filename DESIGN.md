@@ -407,10 +407,11 @@ Implemented (pure or filesystem-only building blocks; nothing composes them into
 | `languages` | Checks that language candidates are well-formed BCP 47 tags and selects one caption track (5.6) | [T16](completed_work/T16.md) |
 | `staging` | File and folder names, the root marker, existing-artifact lookup by ID, `NEVER` publication through a stage directory, and presence checks (5.4, 5.13) | [T17](completed_work/T17.md) |
 | `categories` | Maps an error to a failure category and keeps its raw message (5.9) | [T18](completed_work/T18.md) |
-| `store` | The SQLite database: jobs, items, failures, idempotency keys, one global revision counter and tombstones; one connection per thread and one `BEGIN IMMEDIATE` transaction per write, so revisions become visible in commit order (5.1, 5.3, 5.7–5.10, 5.12, section 7) | [T19](completed_work/T19.md) |
+| `store` | The SQLite database: jobs, items, failures, idempotency keys, one global revision counter and tombstones; one connection per thread and one `BEGIN IMMEDIATE` transaction per write, so revisions become visible in commit order (5.1, 5.3, 5.7–5.10, 5.12, section 7); change pages, snapshot revisions and job views for the feed (C27, C38) | [T19](completed_work/T19.md), [T23](completed_work/T23.md) |
 | `youtube` | yt-dlp adapter: playlist expansion, one metadata extraction per video reused for its MP4 download, progress, pacing options and Firefox cookie detection (5.3, 5.5, 5.11) | [T20](completed_work/T20.md) |
 | `captions` | Caption adapter: lists tracks, selects one with `languages`, fetches SRT, with 10 s connect and 30 s read timeouts (5.6, D38) | [T20](completed_work/T20.md) |
 | `worker` | The YouTube worker thread: round-robin units, the marker pause, `NEVER` checks before network work, staged downloads, caption outcomes by job kind, throttled progress and restart recovery (5.3, 5.4, 5.7, 5.10, 5.12, 5.13) | [T21](completed_work/T21.md) |
 | `reconcile` | The reconciliation thread: periodic and requested passes that remove items whose recorded files are gone and finished jobs left with nothing, with the marker checked before and after probing; cached marker results and pass times that the API reads without touching the share (5.8, 5.13, 5.14, C25, C26) | [T22](completed_work/T22.md) |
+| `notify` | Thread-safe wake-ups for long-poll waiters on the event loop: tickets taken before each database read, so no change committed during a read is missed (5.10) | [T23](completed_work/T23.md) |
 
-Planned in [TODO](TODO.md#active-backlog): the change feed and long-poll notification (T23), and the HTTP API, configuration and entrypoint (T24).
+Planned in [TODO](TODO.md#active-backlog): the HTTP API, configuration and entrypoint (T24).

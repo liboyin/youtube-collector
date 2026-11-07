@@ -25,7 +25,8 @@ from typing import Self
 from youtube_collector.categories import Category
 
 __all__ = [
-    'KEY_RETENTION_SECONDS', 'SCHEMA_VERSION', 'CaptionsOutcome', 'IdempotencyConflict', 'ItemFiles', 'ItemResult',
+    'KEY_RETENTION_SECONDS', 'SCHEMA_VERSION', 'CaptionsOutcome', 'ChangePage', 'CursorPruned', 'IdempotencyConflict',
+    'ItemFiles', 'ItemResult', 'JobView', 'Snapshot',
     'ItemState', 'JobKind', 'JobState', 'MediaOutcome', 'NewFailure', 'Phase', 'PlaylistEntry', 'Store',
     'Submission', 'TargetType', 'TrackKind', 'WorkItem', 'WorkUnit', 'initialize',
 ]
@@ -129,6 +130,19 @@ _DEFINITIVE_CAPTIONS = frozenset({CaptionsOutcome.DOWNLOADED, CaptionsOutcome.EX
 
 class IdempotencyConflict(Exception):
     """Raised when an idempotency key is reused with a different request body."""
+
+
+class CursorPruned(Exception):
+    """Raised when a change-feed cursor is below the pruned-through revision (decision C27).
+
+    Attributes:
+        pruned_through: The highest revision pruning has deleted.
+    """
+
+    def __init__(self, pruned_through: int) -> None:
+        """Record the pruned-through revision."""
+        super().__init__(f'Changes up to revision {pruned_through} were pruned; resynchronize')
+        self.pruned_through = pruned_through
 
 
 @dataclass(frozen=True)
@@ -252,6 +266,51 @@ class Submission:
 
     job: Record
     created: bool
+
+
+@dataclass(frozen=True)
+class ChangePage:
+    """One page of the change feed (DESIGN 5.10, decision C38).
+
+    Attributes:
+        entries: Changed records, each once in its latest state, ordered by revision. Each entry has
+            ``kind`` (``job``, ``item`` or ``failure``), ``id``, ``revision``, ``removed`` and ``record``;
+            job records carry no items.
+        cursor: The ``since`` for the next page: the last revision on this page, or the requested
+            ``since`` when the page is empty.
+        more: Whether further changes remain beyond this page.
+    """
+
+    entries: tuple[Record, ...]
+    cursor: int
+    more: bool
+
+
+@dataclass(frozen=True)
+class Snapshot:
+    """Records read in one transaction, with the revision they were read at (decision C38).
+
+    Attributes:
+        records: The records.
+        revision: The highest revision assigned when they were read.
+    """
+
+    records: tuple[Record, ...]
+    revision: int
+
+
+@dataclass(frozen=True)
+class JobView:
+    """A live job with its items, and the revision of that view.
+
+    Attributes:
+        job: The job's representation with its live items.
+        revision: The highest revision among the job and all its items, removed ones included, so an
+            item's removal counts as a change to the job.
+    """
+
+    job: Record
+    revision: int
 
 
 _SCHEMA = """
@@ -431,8 +490,7 @@ class Store:
 
     def _meta(self, key: str) -> int:
         """Read one counter from the meta table."""
-        value: int = self._connection.execute('SELECT value FROM meta WHERE key = ?', (key,)).fetchone()[0]
-        return value
+        return self._read_meta(self._connection, key)
 
     # Submission
 
@@ -525,6 +583,72 @@ class Store:
         """Return every uncleared failure, oldest first."""
         rows = self._connection.execute('SELECT * FROM failures WHERE removed_at IS NULL ORDER BY seq')
         return [_failure_record(row) for row in rows]
+
+    def jobs_snapshot(self) -> Snapshot:
+        """Return the status table with the revision it was read at, from one read transaction."""
+        with self._read() as connection:
+            ids = [row['id'] for row in connection.execute('SELECT id FROM jobs WHERE removed_at IS NULL ORDER BY seq')]
+            jobs = tuple(self._job_record(connection, job_id) for job_id in ids)
+            return Snapshot(jobs, self._read_meta(connection, 'revision'))
+
+    def failures_snapshot(self) -> Snapshot:
+        """Return every uncleared failure, oldest first, with the revision they were read at."""
+        with self._read() as connection:
+            rows = connection.execute('SELECT * FROM failures WHERE removed_at IS NULL ORDER BY seq')
+            failures = tuple(_failure_record(row) for row in rows)
+            return Snapshot(failures, self._read_meta(connection, 'revision'))
+
+    def job_view(self, job_id: str) -> JobView | None:
+        """Return a live job with its items and the view's revision, or None when unknown or removed."""
+        with self._read() as connection:
+            row = connection.execute(
+                'SELECT revision FROM jobs WHERE id = ? AND removed_at IS NULL', (job_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            items = connection.execute('SELECT MAX(revision) FROM items WHERE job_id = ?', (job_id,)).fetchone()[0]
+            return JobView(self._job_record(connection, job_id), max(row['revision'], items or 0))
+
+    def changes(self, since: int, limit: int) -> ChangePage:
+        """Return the changes after ``since``: each changed record once, latest state, by revision.
+
+        A record that changes again while a caller pages moves to a later page, so following the
+        cursors until ``more`` is false yields the latest state of everything that changed (C38).
+
+        Args:
+            since: The cursor: the revision the caller has seen up to.
+            limit: The most entries to return; at least 1.
+
+        Raises:
+            CursorPruned: If ``since`` is below the pruned-through revision (decision C27).
+            ValueError: If ``limit`` is less than 1.
+        """
+        if limit < 1:
+            raise ValueError(f'limit must be at least 1, not {limit}')
+        with self._read() as connection:
+            pruned_through = self._read_meta(connection, 'pruned_through')
+            if since < pruned_through:
+                raise CursorPruned(pruned_through)
+            entries: list[Record] = []
+            for kind, table, convert in (
+                ('job', 'jobs', _job_fields), ('item', 'items', _item_record), ('failure', 'failures', _failure_record),
+            ):
+                rows = connection.execute(
+                    f'SELECT * FROM {table} WHERE revision > ? ORDER BY revision LIMIT ?', (since, limit + 1),
+                )
+                for row in rows:
+                    record = convert(row)
+                    entries.append({'kind': kind, 'id': row['id'], 'revision': row['revision'],
+                                    'removed': row['removed_at'] is not None, 'record': record})
+        entries.sort(key=_revision_of)
+        page = tuple(entries[:limit])
+        return ChangePage(page, _revision_of(page[-1]) if page else since, more=len(entries) > limit)
+
+    @staticmethod
+    def _read_meta(connection: sqlite3.Connection, key: str) -> int:
+        """Read one counter from the meta table on the given connection."""
+        value: int = connection.execute('SELECT value FROM meta WHERE key = ?', (key,)).fetchone()[0]
+        return value
 
     def _job_record(self, connection: sqlite3.Connection, job_id: str) -> Record:
         """Build a job's representation with its items not removed."""
@@ -933,3 +1057,10 @@ def _failure_record(row: sqlite3.Row) -> Record:
         'removed': row['removed_at'] is not None,
         'removal': row['removal'],
     }
+
+
+def _revision_of(entry: Record) -> int:
+    """Return a change entry's revision."""
+    revision = entry['revision']
+    assert isinstance(revision, int)  # set from an INTEGER column by Store.changes
+    return revision
