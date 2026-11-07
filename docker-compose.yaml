@@ -14,16 +14,22 @@ services:
         # Optional caching proxies. Default to empty (direct internet); set in .env to use a proxy.
         APT_PROXY: ${APT_PROXY:-}
         PYPI_PROXY: ${PYPI_PROXY:-}
-    container_name: youtube-collector-app
+    # No container_name: a fixed name would stop the dev container and the production service
+    # from coexisting on one Docker daemon (DESIGN decision C28).
     init: true
     # The API task adds the service's entrypoint, published port and restart policy. Until
     # then the container is only useful as the dev container, which supplies its own command.
+    #
+    # These are the production mounts. The dev container replaces all of them with
+    # development-only storage (.devcontainer/docker-compose.devcontainer.yaml).
     volumes:
       # Staging area; defaults to the repo's ./assets directory. Override with a host path in .env.
       - ${ASSETS_DIR:-./assets}:/workspaces/youtube-collector/assets
       # Firefox profile for yt-dlp cookies; defaults to an empty named volume (no cookies).
       # Set FIREFOX_PROFILE_DIR to a host profile directory to download private/age-gated videos.
-      - ${FIREFOX_PROFILE_DIR:-firefox_profile}:/home/ubuntu/snap/firefox/common/.mozilla/firefox
+      # Read-only: yt-dlp copies cookies.sqlite to a temporary directory before opening it, and
+      # nothing here may change the live profile.
+      - ${FIREFOX_PROFILE_DIR:-firefox_profile}:/home/ubuntu/snap/firefox/common/.mozilla/firefox:ro
       # Job and failure records. Local Docker storage, never the SMB staging share, and a named
       # volume so the records survive container recreation. `docker compose down -v` deletes it.
       - collector_db:/var/lib/youtube-collector

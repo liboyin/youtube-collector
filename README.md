@@ -12,9 +12,11 @@ The planned service is unauthenticated and intended for a trusted LAN only. Do n
 
 Open the repository in VS Code and reopen it in the Dev Container (`.devcontainer/`). The container's `app` service builds the Dockerfile's `dev` target (`.devcontainer/docker-compose.devcontainer.yaml`), which installs the locked runtime and `dev` dependencies and the editable project into the venv at `/opt/venv`, first on `PATH`. Every PyPI package is fetched through `PYPI_PROXY` when it is set. The image also contains ffmpeg, Deno (yt-dlp's JavaScript runtime) and uv.
 
-The creation hook installs no Python packages. It checks offline that `uv.lock` still matches `pyproject.toml` and fails if it doesn't, without ever rewriting the lock. It then installs Claude Code and standalone Codex with their native installers and verifies `codex --version`. Sign in with `codex login` before using direct CLI review; [the review skill](.agents/skills/adversarial-review/SKILL.md#reviewer-session) owns dispatch and authentication checks.
+The creation hook installs no Python packages. It checks offline that `uv.lock` still matches `pyproject.toml` and fails if it doesn't, without ever rewriting the lock. It writes GitHub's SSH host keys, fetched over HTTPS from `api.github.com/meta`, to `~/.ssh/known_hosts`. It then installs Claude Code and standalone Codex with their native installers and verifies `codex --version`. Sign in with `codex login` before using direct CLI review; [the review skill](.agents/skills/adversarial-review/SKILL.md#reviewer-session) owns dispatch and authentication checks.
 
-No `.env` file is required. Before opening the container, review the mounts under [Configuration](#configuration): if `.env` sets `ASSETS_DIR` or `FIREFOX_PROFILE_DIR`, the container mounts that real staging share or browser profile, which development and test runs must not use ([AGENTS.md](AGENTS.md#validation-and-review)).
+The container mounts your `~/.gitconfig` read-only but no SSH keys. Git over SSH uses the SSH agent that VS Code forwards from the host, so load your key into the host's agent (for example `ssh-add`) before opening the container, then check with `ssh-add -l` inside it.
+
+No `.env` file is required, and the default configuration never mounts host data: whatever `.env` sets, it gets a throwaway `dev_staging` volume as its staging area, its own `dev_db` database volume and no browser profile. The second configuration, **youtube-collector (REAL DATA)** (`.devcontainer/real-data/`), is for sessions that deliberately need the real staging share and cookies; VS Code offers it when you reopen in the container. It mounts `ASSETS_DIR` as the staging area and `FIREFOX_PROFILE_DIR` read-only, refuses to start unless both are set, sets `COLLECTOR_REAL_DATA=1`, and keeps the development database. Opening it authorizes nothing: tests must still use only test-owned storage, and each run against real YouTube needs separate authorization ([AGENTS.md](AGENTS.md#validation-and-review)). Both configurations are the same Compose service, so switching between them recreates the container.
 
 ## Configuration
 
@@ -22,13 +24,13 @@ Compose reads these **interpolation** variables from your shell or an optional, 
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `ASSETS_DIR` | `./assets` | Host directory bind-mounted as the staging area at `/workspaces/youtube-collector/assets`. |
-| `FIREFOX_PROFILE_DIR` | `firefox_profile` (named volume) | Host Firefox profile for yt-dlp cookies; set it to download private or age-gated videos. |
+| `ASSETS_DIR` | `./assets` | Host directory bind-mounted as the staging area at `/workspaces/youtube-collector/assets`, by the service and the real-data dev container only. |
+| `FIREFOX_PROFILE_DIR` | `firefox_profile` (named volume) | Host Firefox profile for yt-dlp cookies, mounted read-only by the service and the real-data dev container only; set it to download private or age-gated videos. |
 | `APT_PROXY` | empty (none) | Optional apt caching proxy used during the image build. |
 | `PYPI_PROXY` | empty (none) | Optional PyPI proxy for every PyPI package the image installs, including the dev container's dev tools. `update-dependencies.sh` still resolves against PyPI. |
 | `BUILD_COMMON_CONTEXT` | pinned Git URL (`docker-build-common.git#v1.2.0`) | Shared build-helper source; a local clone avoids fetching that context. |
 
-The `collector_db` named volume, mounted at `/var/lib/youtube-collector`, will hold the service's SQLite database. It lives in local Docker storage rather than the staging share, and survives container recreation. `docker compose down -v` deletes it.
+The `collector_db` named volume, mounted at `/var/lib/youtube-collector`, will hold the service's SQLite database. It lives in local Docker storage rather than the staging share, and survives container recreation. `docker compose down -v` deletes it. The dev containers use `dev_db` instead and never mount `collector_db`. The Compose service sets no fixed container name, so the dev container and the service can run on the same Docker daemon.
 
 ## Updating dependencies
 

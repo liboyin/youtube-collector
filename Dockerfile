@@ -48,10 +48,12 @@ COPY --from=ghcr.io/astral-sh/uv:0.13.7@sha256:96f40d3904aad8d0bd010539001d36c8e
 
 # The venv and the project directory belong to the runtime user from the start, so the dev
 # container's `uv sync` (update-dependencies.sh) can update the venv without a recursive
-# chown, which would copy the whole venv into another layer. The database directory is the
-# mount point of a named volume; Docker initializes a new volume from it, ownership included,
-# so the service can write its SQLite file there.
-RUN install -d -o ubuntu -g ubuntu /opt/venv /workspaces/youtube-collector /var/lib/youtube-collector
+# chown, which would copy the whole venv into another layer. The database and staging
+# directories are mount points of named volumes (the dev container mounts both as volumes);
+# Docker initializes a new volume from the image's directory, ownership included, so the
+# runtime user can write there.
+RUN install -d -o ubuntu -g ubuntu /opt/venv /workspaces/youtube-collector \
+    /workspaces/youtube-collector/assets /var/lib/youtube-collector
 USER ubuntu
 WORKDIR /workspaces/youtube-collector
 

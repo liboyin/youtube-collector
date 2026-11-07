@@ -1,0 +1,14 @@
+# Opt-in real-data layer for the dev container, applied after ../docker-compose.devcontainer.yaml
+# by real-data/devcontainer.json only (DESIGN decision C28). Compose merges volumes by container
+# path, so the real share replaces the throwaway staging volume, the profile is added read-only,
+# and the development database volume stays: a development collector must never share the
+# production SQLite file. `:?` makes the configuration fail instead of silently falling back to
+# development storage when a variable is unset or empty.
+services:
+  app:
+    environment:
+      # Lets tests and scripts tell that real data is mounted.
+      COLLECTOR_REAL_DATA: "1"
+    volumes:
+      - ${ASSETS_DIR:?the real-data dev container requires ASSETS_DIR}:/workspaces/youtube-collector/assets
+      - ${FIREFOX_PROFILE_DIR:?the real-data dev container requires FIREFOX_PROFILE_DIR}:/home/ubuntu/snap/firefox/common/.mozilla/firefox:ro

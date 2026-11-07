@@ -1,7 +1,11 @@
 {
+    // Development-only storage; real-data/devcontainer.json is the opt-in configuration that
+    // mounts the real staging share and Firefox profile. Keep the two files in step.
+    "name": "youtube-collector",
     "dockerComposeFile": [
         "../docker-compose.yaml",
-        // builds the app service from the Dockerfile's dev target, which adds the dev tools
+        // builds the app service from the Dockerfile's dev target and replaces the production
+        // mounts with development-only volumes
         "docker-compose.devcontainer.yaml"
     ],
     "service": "app",
@@ -16,9 +20,9 @@
     "remoteUser": "ubuntu",
     "workspaceFolder": "/workspaces/youtube-collector",
     "mounts": [
-        // share Git + SSH config between host and container
+        // share Git config between host and container; SSH authentication uses the agent VS Code
+        // forwards, so no key files are mounted (DESIGN decision C31)
         "source=${localEnv:HOME}/.gitconfig,target=/home/ubuntu/.gitconfig,type=bind,readonly",
-        "source=${localEnv:HOME}/.ssh,target=/home/ubuntu/.ssh,type=bind,readonly",
         // override .dockerignore to mount the entire workspace
         "source=${localWorkspaceFolder},target=/workspaces/youtube-collector,type=bind"
     ],

@@ -1,0 +1,50 @@
+{
+    // Opt-in configuration that mounts the REAL staging share and a read-only copy of the real
+    // Firefox profile (DESIGN decision C28). Opening it authorizes nothing: each run against real
+    // YouTube still needs the user's authorization for that run, tests still use only
+    // test-owned storage, and the database stays the development one. Identical to
+    // ../devcontainer.json except for the name and the extra Compose file; keep them in step.
+    "name": "youtube-collector (REAL DATA)",
+    "dockerComposeFile": [
+        "../../docker-compose.yaml",
+        "../docker-compose.devcontainer.yaml",
+        // adds the real share and profile back; fails unless ASSETS_DIR and FIREFOX_PROFILE_DIR are set
+        "docker-compose.real-data.yaml"
+    ],
+    "service": "app",
+    "features": {
+        // base image doesn't have sudo
+        "ghcr.io/devcontainers/features/common-utils:latest": {
+            "configureZshAsDefaultShell": true
+        }
+    },
+    "overrideCommand": true,
+    "postCreateCommand": "chmod +x .devcontainer/postCreateCommand.sh && ./.devcontainer/postCreateCommand.sh",
+    "remoteUser": "ubuntu",
+    "workspaceFolder": "/workspaces/youtube-collector",
+    "mounts": [
+        // share Git config between host and container; SSH authentication uses the agent VS Code
+        // forwards, so no key files are mounted (DESIGN decision C31)
+        "source=${localEnv:HOME}/.gitconfig,target=/home/ubuntu/.gitconfig,type=bind,readonly",
+        // override .dockerignore to mount the entire workspace
+        "source=${localWorkspaceFolder},target=/workspaces/youtube-collector,type=bind"
+    ],
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "anthropic.claude-code",
+                "charliermarsh.ruff",
+                "mhutchie.git-graph",
+                "ms-python.debugpy",
+                "ms-python.python",
+                "ms-python.vscode-pylance",
+                "ms-vscode.live-server",
+                "openai.chatgpt",
+                "ryu1kn.partial-diff",
+                "streetsidesoftware.code-spell-checker",
+                "tamasfe.even-better-toml",
+                "yzhang.markdown-all-in-one"
+            ]
+        }
+    }
+}

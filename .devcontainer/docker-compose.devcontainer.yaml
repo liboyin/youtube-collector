@@ -1,7 +1,20 @@
 # Dev container override, layered on ../docker-compose.yaml by devcontainer.json. Only the
 # service the dev container attaches to gets the dev target, which adds the locked dev group
 # through PYPI_PROXY at build time. Compose defines no other service.
+#
+# `!override` (Compose 2.24.4 or later) replaces the production mount list instead of merging
+# with it, so no ASSETS_DIR or FIREFOX_PROFILE_DIR setting in .env can reach the dev container:
+# it gets a throwaway staging volume, its own database volume and no browser profile (DESIGN
+# decision C28). The opt-in real-data configuration (real-data/) layers the real share and a
+# read-only profile back on top of this file.
 services:
   app:
     build:
       target: dev
+    volumes: !override
+      - dev_staging:/workspaces/youtube-collector/assets
+      - dev_db:/var/lib/youtube-collector
+
+volumes:
+  dev_staging:
+  dev_db:
