@@ -364,6 +364,29 @@ These contract details were raised in the 2026-11-07 review and MUST be settled 
 |---|---|---|
 | Q3 | Change-feed recovery (C27): how does a caller resynchronize consistently, including failures, and how do pages coalesce? | `GET /jobs` and `GET /failures` each return the revision their snapshot was read at, from one transaction. A change page lists each changed record once, at its latest revision, ordered by that revision; the next cursor is the last revision on the page. A record that changes again reappears on a later page. |
 
+### Q3 analysis (2026-11-07)
+
+Written at the user's request before deciding Q3. The store (T19) already fixes two facts that every option builds on. Every job, item and failure row carries its latest revision, and a removal leaves a tombstone row with its own revision. Writers are serialized by `BEGIN IMMEDIATE` and take revisions in statement order, so revisions become visible in commit order, and within one write an item's change precedes its job's.
+
+**Q3a, paging and coalescing.** Three ways to page:
+
+- **Latest-state paging (the proposal).** A page is `revision > since`, ordered by revision, up to a limit, across the three record kinds. Each record appears at most once, in its latest state. The next cursor is the last revision on the page, and `more` says whether rows remain. A record that changes while a caller pages moves to a later page, so nothing is missed, but intermediate states (such as progress ticks) are skipped. That is the coalescing DESIGN 5.10 asks for. Callers must apply entries as upserts keyed by kind and ID, and must not rely on cross-record order beyond revision order. For example, an item that changed again after its job finished appears after the job.
+- **An append-only change log.** One row per change, with coalescing at read time. It keeps exact history and makes paging simple, but it adds a second copy of every record, more writes per change, and its own pruning. Nothing in DESIGN needs the history.
+- **No paging.** Return every change since the cursor in one response. It is simpler, and the status table is small (10–20 files), but DESIGN 5.10 already promises a next cursor and a `more` flag, and a caller offline for days could receive every tombstone of the retention period at once.
+
+**Q3b, a consistent resynchronization snapshot.** It is needed after 410, or by a new caller. Three ways:
+
+- **Two snapshots with revisions (the proposal).** `GET /jobs` and `GET /failures` each return the revision their snapshot was read at, from one read transaction. The caller then follows the feed from the lower of the two. Anything that changed between the two reads is delivered again, which upserts tolerate. It takes two calls and needs no new endpoint.
+- **One combined snapshot.** `GET /jobs` also embeds the uncleared failures, in one transaction with one revision, so a single call resynchronizes everything. `GET /failures` stays for the user. `GET /jobs` gets larger, and failures appear in what DESIGN calls the status table.
+- **Resynchronize through the feed.** `GET /jobs/changes` without `since` pages through every live record and every tombstone newer than the pruned-through revision, so there is one mechanism for catching up and starting fresh. A snapshot paged over several requests is still consistent once `more` is false, by the same move-forward argument. But it changes C27's "resynchronize from `GET /jobs`" wording, and it delivers tombstones that a fresh caller may not want.
+
+**Q3c, edge cases any option must settle:**
+
+- **A cursor from another database.** If the production volume is recreated (`docker compose down -v`, or a restore), revisions restart at 0. A caller's persisted cursor of 500 then silently skips the first 500 new revisions, or waits forever. Two fixes: treat `since` greater than the current revision as 410, which catches only the first case; or make cursors opaque tokens carrying a random database ID created with the schema, which catches both.
+- **Pruning while a caller pages.** If tombstones age past the retention while a caller is behind, its next page gets 410 mid-catch-up. With 7-day retention this needs a caller more than a week behind. Resynchronizing is the correct response.
+- **An empty page.** Its cursor can safely advance to the current revision, since nothing above `since` exists. Keeping `since` is equally correct; advancing saves nothing measurable.
+- **`GET /jobs/{id}?since&wait`.** It returns the job with its items as soon as the job or any of its items has a revision above `since`. A removed job is 404, consistent with C30: tombstones reach callers through the feed.
+
 ## 13. Assumptions
 
 These follow from repository evidence or the discussion, and stand unless the user objects:
