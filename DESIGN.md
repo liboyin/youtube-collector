@@ -385,5 +385,6 @@ Implemented (pure or filesystem-only building blocks; nothing composes them into
 | `languages` | Checks that language candidates are well-formed BCP 47 tags and selects one caption track (5.6) | [T16](completed_work/T16.md) |
 | `staging` | File and folder names, the root marker, existing-artifact lookup by ID, `NEVER` publication through a stage directory, and presence checks (5.4, 5.13) | [T17](completed_work/T17.md) |
 | `categories` | Maps an error to a failure category and keeps its raw message (5.9) | [T18](completed_work/T18.md) |
+| `store` | The SQLite database: jobs, items, failures, idempotency keys, one global revision counter and tombstones; one connection per thread and one `BEGIN IMMEDIATE` transaction per write, so revisions become visible in commit order (5.1, 5.3, 5.7–5.10, 5.12, section 7) | [T19](completed_work/T19.md) |
 
-Planned in [TODO](TODO.md#active-backlog): `store` (SQLite, T19), the yt-dlp and caption adapters (T20), the worker (T21), reconciliation (T22), the change feed and long-poll notification (T23), and the HTTP API, configuration and entrypoint (T24).
+Planned in [TODO](TODO.md#active-backlog): the yt-dlp and caption adapters (T20), the worker (T21), reconciliation (T22), the change feed and long-poll notification (T23), and the HTTP API, configuration and entrypoint (T24).
