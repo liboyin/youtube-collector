@@ -11,15 +11,17 @@ authors = [
   {name = "Libo Yin", email = "liboyin830@gmail.com"}
 ]
 dependencies = [
-  "fastapi[standard]",
+  "fastapi",
   "pathlib-extensions@git+https://github.com/liboyin/pathlib-extensions.git",
   "requests",
+  "uvicorn[standard]",
   "youtube-transcript-api",
   "yt-dlp[default]",
 ]
 
 [dependency-groups]
 dev = [
+  "httpx2",
   "mypy",
   "pytest",
   "pytest-cov",
