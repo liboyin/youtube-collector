@@ -6,7 +6,7 @@ Dependencies govern execution. A recorded task is not permission to combine unre
 
 ## Recommended order
 
-T31 is ready now that the API has settled; T25 needs the user's authorization for a run against real YouTube; T10 collects host checks as tasks land; T14 waits for its revisit trigger.
+T31 is ready now that the API has settled; T25 needs the user's authorization for a run against real YouTube; T10 collects host checks as tasks land; T34 follows T25 and the user's orchestrator design; T14 waits for its revisit trigger.
 
 ## Shared constraints
 
@@ -20,3 +20,4 @@ Application modules live in `youtube_collector/`, one module per responsibility,
 - [T14](open/T14.md) — Low, deferred. Let COVERAGE_THRESHOLD lower the coverage gate.
 - [T25](open/T25.md) — Low. First end-to-end run against real YouTube.
 - [T31](open/T31.md) — Low. Typed response models.
+- [T34](open/T34.md) — Medium, blocked on the user's orchestrator design. Integrate the orchestrator with the collector.
