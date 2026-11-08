@@ -1,7 +1,6 @@
 """Tests for the SQLite store (DESIGN 5.1, 5.3, 5.7-5.10, 5.12 and section 7)."""
 
 import sqlite3
-import threading
 from contextlib import closing
 from unittest.mock import patch
 
@@ -159,7 +158,7 @@ def test_store_rejects_an_uninitialized_database(tmp_path, clock):
         testee.Store(tmp_path / 'empty.sqlite3', clock)
 
 
-def test_store_refuses_use_from_another_thread(store):
+def test_store_refuses_use_from_another_thread(store, owned_threads):
     """A connection belongs to the thread that opened it (decision C36)."""
     errors = []
 
@@ -169,9 +168,7 @@ def test_store_refuses_use_from_another_thread(store):
         except sqlite3.ProgrammingError as error:
             errors.append(error)
 
-    thread = threading.Thread(target=use)
-    thread.start()
-    thread.join()
+    owned_threads.start(use).join(10)
     assert len(errors) == 1
 
 

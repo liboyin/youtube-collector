@@ -2,9 +2,7 @@
 
 import functools
 import logging
-import threading
-import urllib.request
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from http.server import SimpleHTTPRequestHandler
 
 import pytest
 import yt_dlp
@@ -217,90 +215,12 @@ class QuietHandler(SimpleHTTPRequestHandler):
         """Discard the access log."""
 
 
-class LoopbackServer(ThreadingHTTPServer):
-    """A loopback HTTP server whose ``server_close`` joins every request handler.
-
-    ``ThreadingHTTPServer`` runs handlers on daemon threads, which ``server_close`` does not join, so a
-    handler could outlive the test that owns its files. Non-daemon handler threads are joined.
-    """
-
-    daemon_threads = False
-
-
 @pytest.fixture
-def local_server(tmp_path):
-    """Serve ``tmp_path/served`` on loopback for the test; teardown stops the server and joins every handler."""
+def local_server(tmp_path, loopback_server):
+    """Serve ``tmp_path/served`` on loopback for the test; the shared fixture owns every thread."""
     served = tmp_path / 'served'
     served.mkdir()
-    server = LoopbackServer(('127.0.0.1', 0), functools.partial(QuietHandler, directory=str(served)))
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        yield served, f'http://127.0.0.1:{server.server_address[1]}'
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join()
-
-
-def test_loopback_server_close_waits_for_request_handlers(tmp_path):
-    """Closing the test server joins a handler that is still finishing, so no handler outlives its test."""
-    (tmp_path / 'file').write_bytes(b'data')
-    entered = threading.Event()
-    release = threading.Event()
-    order = []
-    client_errors = []
-    handler_threads = []
-
-    class BlockingHandler(QuietHandler):
-        """A handler that holds its connection open until released."""
-
-        def finish(self):
-            """Record this handler's thread, signal entry, wait for release, then finish."""
-            handler_threads.append(threading.current_thread())  # joined in teardown whatever daemon_threads says
-            entered.set()
-            release.wait(10)
-            super().finish()
-            order.append('handler finished')
-
-    def fetch():
-        try:
-            urllib.request.urlopen(f'http://127.0.0.1:{server.server_address[1]}/file', timeout=10).close()
-        except Exception as error:  # recorded here, so the test owns the client's failure too
-            client_errors.append(error)
-
-    def close():
-        server.server_close()
-        order.append('server closed')
-
-    server = LoopbackServer(('127.0.0.1', 0), functools.partial(BlockingHandler, directory=str(tmp_path)))
-    serving = threading.Thread(target=server.serve_forever)
-    client = threading.Thread(target=fetch)
-    closer = threading.Thread(target=close)
-    serving.start()
-    try:
-        client.start()
-        assert entered.wait(10)
-        server.shutdown()
-        closer.start()
-        # A bounded negative check: with daemon handler threads, server_close would return at once.
-        closer.join(0.5)
-        assert closer.is_alive()
-        release.set()
-        closer.join(10)
-        assert order == ['handler finished', 'server closed']
-    finally:
-        # Unconditional teardown, also when an assertion above failed: release the handler, stop the
-        # server, close it (which joins the handler) unless the closer already does, and join everything.
-        release.set()
-        server.shutdown()
-        if closer.ident is None:
-            server.server_close()
-        threads = [*handler_threads, *(thread for thread in (closer, client, serving) if thread.ident is not None)]
-        for thread in threads:
-            thread.join(10)
-        assert not any(thread.is_alive() for thread in threads)
-    assert client_errors == []
+    return served, loopback_server(functools.partial(QuietHandler, directory=str(served)))
 
 
 def test_download_media_writes_to_a_literal_path_with_real_yt_dlp(tmp_path, local_server):

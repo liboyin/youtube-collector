@@ -571,7 +571,7 @@ def test_round_robin_alternates_between_jobs(worker, db, media):
     assert steps == [testee.Step.EXPANDED, *[testee.Step.PROCESSED] * 3, testee.Step.IDLE]
 
 
-def test_run_recovers_processes_and_stops(worker, db, media):
+def test_run_recovers_processes_and_stops(worker, db, media, owned_threads):
     """The run loop recovers interrupted work, processes it, and stops after the current unit (DESIGN 5.12, C36)."""
     job = submit(db, kind=store.JobKind.VIDEOS)
     db.start_item(job['items'][0]['id'])  # interrupted by a restart
@@ -584,13 +584,9 @@ def test_run_recovers_processes_and_stops(worker, db, media):
         worker.stop()
 
     media.download_media = download
-    thread = threading.Thread(target=worker.run)
-    thread.start()
-    try:
-        assert downloaded.wait(10)
-    finally:
-        worker.stop()  # also on failure, so the thread never outlives the test
-        thread.join(10)
+    thread = owned_threads.start(worker.run, stop=worker.stop)
+    assert downloaded.wait(10)
+    thread.join(10)
     assert not thread.is_alive()
     assert item_of(db, job)['state'] == 'done'
 
@@ -613,7 +609,7 @@ def test_run_survives_a_failing_step(worker, caplog):
     assert 'Worker step failed' in caplog.text
 
 
-def test_run_waits_while_paused_until_stopped(worker, root):
+def test_run_waits_while_paused_until_stopped(worker, root, owned_threads):
     """A paused worker waits for the pause interval, and stop ends that wait at once."""
     (root / staging.MARKER_NAME).unlink()
     steps = []
@@ -625,8 +621,7 @@ def test_run_waits_while_paused_until_stopped(worker, root):
         return steps[-1]
 
     worker.step = step
-    thread = threading.Thread(target=worker.run)
-    thread.start()
+    thread = owned_threads.start(worker.run, stop=worker.stop)
     thread.join(10)
     assert not thread.is_alive()
     assert steps == [testee.Step.PAUSED]
