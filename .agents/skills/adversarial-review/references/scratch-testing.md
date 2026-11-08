@@ -8,7 +8,7 @@ Create a scratch copy only when writable execution is needed. Within one agent's
 
 Choose a focused test set that observes the protected behavior and owns every side effect reachable under the mutant. Inspect changed failure and routing paths before running it: a mutant that bypasses validation can reach resource creation that the passing test never exercised. Supply owned service doubles or appropriate scratch-only guards for those paths; an invalid hostname, synthetic credentials or temporary settings do not prevent network attempts. Preserve the import lifecycle under test when adding guards. For example, a routing probe can change the selected worker after role validation; a validation-bypass probe must also contain the resource creation that invalid input could now reach.
 
-Establish a passing unmutated baseline for the selected tests with the same bootstrap, isolation and provenance checks. A mutation kill requires a behavioral failure for the named invariant. When probing premature acknowledgement or publication, make the mutant perform that side effect, rather than merely prepare an unexecuted operation, unless preparation itself is the protected invariant.
+Select tests per mutant: the narrowest set that observes its invariant. A mutant that removes a wake-up, a cap or a stop signal can turn every test of a file into a timeout, stretching one run from seconds to many minutes; run it against the test that observes the invariant. Establish a passing unmutated baseline for the selected tests with the same bootstrap, isolation and provenance checks. A mutation kill requires a behavioral failure for the named invariant. When probing premature acknowledgement or publication, make the mutant perform that side effect, rather than merely prepare an unexecuted operation, unless preparation itself is the protected invariant.
 
 If a run escapes ownership or fails provenance, record it as invalid regardless of other assertion failures. Stop that probe, quiesce owned work, restore the candidate, and correct its containment or test selection before retrying; do not repeat the unsafe command unchanged. Retain a brief account of the escaped operation and any verified access or cleanup, without secrets. Follow the [evidence rules](../SKILL.md#evidence-retention) to rerun affected cases rather than automatically restart an otherwise valid batch.
 
@@ -26,7 +26,7 @@ import pytest
 def pytest_sessionfinish(session, exitstatus):
     """Verify exercised API provenance without preloading application modules."""
     scratch_root = Path(__file__).resolve().parents[1]
-    names = ("youtube_collector.api.app",)
+    names = ("youtube_collector.api",)
     for name in names:
         module = sys.modules.get(name)
         if module is None:
@@ -37,11 +37,11 @@ def pytest_sessionfinish(session, exitstatus):
     print(f"ACTUAL_IMPORT_PROVENANCE scratch={scratch_root} verified={','.join(names)}")
 ```
 
-List only modules the selected tests are expected to exercise; modules intentionally kept absent MUST remain absent. If tests unload or replace modules, check provenance immediately after the relevant test-controlled import instead of relying on the session-end hook. For test-spawned child processes, add equivalent scratch-only location checks inside each child after its own configuration setup and controlled imports. A parent pytest check does not certify a child's imports. From the scratch root, a focused API run is:
+In the same hook, list the non-main threads still alive (`threading.enumerate()`), so leaked background work is visible in every run's evidence. A mutant that breaks a stop or shutdown signal can leave threads running: record that as its behavioral effect, but the ownership rules still apply, so the leaked work must not reach other tests. Run such a mutant alone, in its own fresh process, against only the test that observes the invariant, and verify afterwards that the process has exited and no owned process remains. A run in which leaked work could reach another test is invalid evidence and is repeated in that form. List only modules the selected tests are expected to exercise; modules intentionally kept absent MUST remain absent. If tests unload or replace modules, check provenance immediately after the relevant test-controlled import instead of relying on the session-end hook. For test-spawned child processes, add equivalent scratch-only location checks inside each child after its own configuration setup and controlled imports. A parent pytest check does not certify a child's imports. From the scratch root, a focused API run is:
 
 ```bash
 mkdir -p owned-temp
-PYTHONPATH="$PWD" PYTHONDONTWRITEBYTECODE=1 TMPDIR="$PWD/owned-temp" python -m pytest tests/api/test_app.py --no-cov --basetemp="$PWD/owned-temp/pytest"
+PYTHONPATH="$PWD" PYTHONDONTWRITEBYTECODE=1 TMPDIR="$PWD/owned-temp" python -m pytest tests/test_api.py --no-cov --basetemp="$PWD/owned-temp/pytest"
 ```
 
 A run failing the import check is invalid evidence, rather than a surviving or killed mutant. Save required evidence outside disposable scratch before cleanup. `PYTHONPATH` and owned temporary paths do not replace the test bootstrap's settings isolation or service doubles.

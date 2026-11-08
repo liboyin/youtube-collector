@@ -38,14 +38,14 @@ CLAUDE.md
 
 # Documentations
 README.md
-TODO.md
+tasks/
 
 # Docker files
 Dockerfile
 .dockerignore
 docker-compose*.yaml
 
-# Secret files
+# Machine-specific settings (no secrets)
 .env
 
 # Scripts
