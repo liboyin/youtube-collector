@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from youtube_collector.captions import CaptionClient
 from youtube_collector.config import Settings
 from youtube_collector.languages import is_well_formed
+from youtube_collector.responses import FailureList, FailureResponse, Health, JobList, JobResponse
 from youtube_collector.store import JobKind, Store, TargetType, initialize
 from youtube_collector.urls import PlaylistTarget, UnsupportedUrlError, parse_target
 from youtube_collector.worker import CaptionSource, MediaSource, Worker
@@ -206,28 +207,33 @@ def create_app(
         rt.worker.wake()
         return job
 
-    @app.post('/jobs/videos', status_code=status.HTTP_202_ACCEPTED, summary='Submit a media job')
+    # Throughout: exclude_unset keeps absent fields absent and null ones null, because an item carries
+    # only the artifacts its job requests.
+    @app.post('/jobs/videos', status_code=status.HTTP_202_ACCEPTED, summary='Submit a media job',
+              response_model=JobResponse, response_model_exclude_unset=True)
     async def submit_videos(body: _VideosRequest, rt: service) -> Body:
         """Download MP4 media (DESIGN 5.1)."""
         return await submit(rt, JobKind.VIDEOS, body)
 
-    @app.post('/jobs/captions', status_code=status.HTTP_202_ACCEPTED, summary='Submit a captions job')
+    @app.post('/jobs/captions', status_code=status.HTTP_202_ACCEPTED, summary='Submit a captions job',
+              response_model=JobResponse, response_model_exclude_unset=True)
     async def submit_captions(body: _CaptionsRequest, rt: service) -> Body:
         """Download SRT captions (DESIGN 5.1)."""
         return await submit(rt, JobKind.CAPTIONS, body)
 
     @app.post('/jobs/videos-with-captions', status_code=status.HTTP_202_ACCEPTED,
-              summary='Submit a media-and-captions job')
+              summary='Submit a media-and-captions job', response_model=JobResponse,
+              response_model_exclude_unset=True)
     async def submit_videos_with_captions(body: _CaptionsRequest, rt: service) -> Body:
         """Download MP4 media and SRT captions (DESIGN 5.1)."""
         return await submit(rt, JobKind.VIDEOS_WITH_CAPTIONS, body)
 
-    @app.get('/jobs', summary='The status table')
+    @app.get('/jobs', summary='The status table', response_model=JobList, response_model_exclude_unset=True)
     async def list_jobs(rt: service) -> Body:
         """Every retained job, with its items and uncleared failures (DESIGN 5.8)."""
         return {'jobs': await rt.db(lambda store: store.list_jobs())}
 
-    @app.get('/jobs/{job_id}', summary='One job')
+    @app.get('/jobs/{job_id}', summary='One job', response_model=JobResponse, response_model_exclude_unset=True)
     async def get_job(job_id: str, rt: service) -> Body:
         """One job with its items and uncleared failures; poll this to follow it (DESIGN 5.10).
 
@@ -238,17 +244,17 @@ def create_app(
             raise HTTPException(status.HTTP_404_NOT_FOUND, f'Unknown job {job_id}')
         return job
 
-    @app.get('/failures', summary='Uncleared failures')
+    @app.get('/failures', summary='Uncleared failures', response_model=FailureList)
     async def list_failures(rt: service) -> Body:
         """Every uncleared failure, oldest first: the place to check errored tasks (DESIGN 5.9)."""
         return {'failures': await rt.db(lambda store: store.list_failures())}
 
-    @app.delete('/failures', summary='Clear all failures')
+    @app.delete('/failures', summary='Clear all failures', response_model=FailureList)
     async def clear_failures(rt: service) -> Body:
         """Clear every failure and return the cleared records."""
         return {'failures': await rt.db(lambda store: store.clear_failures())}
 
-    @app.delete('/failures/{failure_id}', summary='Clear one failure')
+    @app.delete('/failures/{failure_id}', summary='Clear one failure', response_model=FailureResponse)
     async def clear_failure(failure_id: str, rt: service) -> Body:
         """Clear one failure and return it; 404 when unknown or already cleared."""
         cleared = await rt.db(lambda store: store.clear_failure(failure_id))
@@ -256,7 +262,10 @@ def create_app(
             raise HTTPException(status.HTTP_404_NOT_FOUND, f'Unknown failure {failure_id}')
         return cleared
 
-    @app.get('/health', summary='Service health', responses={503: {'description': 'Unhealthy; same body.'}})
+    @app.get(
+        '/health', summary='Service health', response_model=Health,
+        responses={503: {'model': Health, 'description': 'Unhealthy; same body.'}},
+    )
     async def health(rt: service) -> JSONResponse:
         """Database, staging marker, worker liveness and yt-dlp version, without contacting YouTube (5.14).
 

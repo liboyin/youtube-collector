@@ -233,7 +233,7 @@ It returns 200 when everything is healthy and 503 otherwise, with the same body 
 | `DELETE /failures/{id}` | Clear one failure |
 | `GET /health` | Service health and paused state (5.14) |
 
-An unknown job or failure returns 404. Validation errors return 422. Unexpected errors return a generic 500 and are logged, as at the source revision. Exact JSON schemas are left to implementation. FastAPI's OpenAPI document, browsable at `/docs`, publishes the request bodies' schemas and describes every endpoint; responses are untyped JSON objects whose fields this document and the endpoint descriptions define. Typed response models are task [T31](tasks/open/T31.md).
+An unknown job or failure returns 404. Validation errors return 422. Unexpected errors return a generic 500 and are logged, as at the source revision. Exact JSON schemas are left to implementation. FastAPI's OpenAPI document, browsable at `/docs`, publishes the schema of every request and response.
 
 ## 7. Deployment and operation
 
@@ -412,6 +412,7 @@ Implemented:
 | `worker` | The YouTube worker thread: round-robin units, the marker pause, the cached staging check that `/health` reads, `NEVER` checks before network work, staged downloads, caption outcomes by job kind and restart recovery (5.3, 5.4, 5.7, 5.12–5.14, C43) | [T21](tasks/closed/T21.md), [T33](tasks/closed/T33.md) |
 | `config` | Settings from the environment with section 7's defaults; the only module that reads the environment | [T24](tasks/closed/T24.md) |
 | `api` | The FastAPI app and the service's composition: every endpoint in section 6, the lifespan that starts and stops the worker thread, database calls on one dedicated thread, and health from the worker's cached check (5.1, 5.8, 5.10, 5.14, C25, C36) | [T24](tasks/closed/T24.md), [T33](tasks/closed/T33.md) |
+| `responses` | The response models that publish every field in the OpenAPI document (section 6) | [T31](tasks/closed/T31.md) |
 | `__main__` | `python3 -m youtube_collector`: one uvicorn process | [T24](tasks/closed/T24.md) |
 
 The first run against real YouTube is task [T25](tasks/open/T25.md).

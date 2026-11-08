@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 import youtube_collector.api as testee
 from youtube_collector import staging
 from youtube_collector.config import Settings
+from youtube_collector.responses import Health
 from youtube_collector.youtube import Playlist, PlaylistVideo, VideoInfo
 
 VIDEO = 'abcdefghijk'
@@ -149,6 +150,69 @@ def wait_until_finished(client, job):
 def wait_for_staging_check(client):
     """Wait for the worker's first marker check."""
     wait_for(lambda: client.app.state.runtime.worker.staging_check() is not None)
+
+
+def schema_fields(document, name):
+    """Return the field names a schema in the OpenAPI document declares."""
+    return set(document['components']['schemas'][name]['properties'])
+
+
+def test_openapi_publishes_every_response_field(client):
+    """/docs lists each field of a job, item, failure and health body (DESIGN section 6)."""
+    document = client.get('/openapi.json').json()
+    assert schema_fields(document, 'JobResponse') == {
+        'id', 'kind', 'url', 'target', 'languages', 'state', 'playlist_title', 'created_at', 'updated_at', 'items',
+        'failures',
+    }
+    assert schema_fields(document, '_Item') == {
+        'id', 'job_id', 'position', 'video_id', 'title', 'state', 'media', 'captions', 'created_at', 'updated_at',
+    }
+    assert schema_fields(document, 'FailureResponse') == {
+        'id', 'created_at', 'job_id', 'job_kind', 'item_id', 'url', 'video_id', 'playlist_id', 'playlist_title',
+        'phase', 'category', 'message',
+    }
+    assert schema_fields(document, 'Health') == {'healthy', 'database', 'staging', 'threads', 'yt_dlp_version'}
+
+
+@pytest.mark.parametrize(('method', 'path', 'status_code', 'schema'), [
+    ('post', '/jobs/videos', '202', 'JobResponse'),
+    ('post', '/jobs/captions', '202', 'JobResponse'),
+    ('post', '/jobs/videos-with-captions', '202', 'JobResponse'),
+    ('get', '/jobs', '200', 'JobList'),
+    ('get', '/jobs/{job_id}', '200', 'JobResponse'),
+    ('get', '/failures', '200', 'FailureList'),
+    ('delete', '/failures', '200', 'FailureList'),
+    ('delete', '/failures/{failure_id}', '200', 'FailureResponse'),
+    ('get', '/health', '200', 'Health'),
+    ('get', '/health', '503', 'Health'),
+])
+def test_every_endpoint_declares_its_response_schema(client, method, path, status_code, schema):
+    """Each endpoint names its model, so no response shows up as a generic object."""
+    operation = client.get('/openapi.json').json()['paths'][path][method]
+    assert operation['responses'][status_code]['content']['application/json']['schema'] == {
+        '$ref': f'#/components/schemas/{schema}',
+    }
+
+
+def test_responses_keep_absent_artifacts_absent_and_unknown_ones_null(client):
+    """The models change nothing on the wire: a videos job has no captions key, and an unknown outcome is null."""
+    videos = client.post('/jobs/videos', json={'url': VIDEO_URL}).json()
+    captions = client.post('/jobs/captions', json={'url': f'https://youtu.be/{OTHER}', 'languages': ['en']}).json()
+    assert 'captions' not in videos['items'][0]
+    assert videos['items'][0]['media'] == {'outcome': None, 'path': None}
+    assert 'media' not in captions['items'][0]
+    assert captions['items'][0]['captions'] == {'outcome': None, 'path': None, 'track': None}
+    assert videos['languages'] is None
+    for read in (client.get('/jobs').json()['jobs'], [client.get(f'/jobs/{videos["id"]}').json()]):
+        assert 'captions' not in next(job for job in read if job['id'] == videos['id'])['items'][0]
+
+
+def test_a_failure_keeps_its_null_context_fields(client, media):
+    """A failure of a single video reports its absent playlist as null rather than dropping the key."""
+    media.download_error = RuntimeError('boom')
+    wait_until_finished(client, client.post('/jobs/videos', json={'url': VIDEO_URL}).json())
+    [failure] = client.get('/failures').json()['failures']
+    assert (failure['playlist_id'], failure['playlist_title']) == (None, None)
 
 
 def test_default_components_detect_cookies_once_and_build_the_real_adapters(settings):
@@ -311,6 +375,7 @@ def test_health_is_200_when_everything_is_healthy(client):
     assert (body['staging']['ok'], body['staging']['marker_present'], body['staging']['paused']) == (True, True, False)
     assert body['threads'] == {'worker': True}
     assert body['yt_dlp_version'] == testee.yt_dlp.version.__version__
+    Health.model_validate(body)  # /health returns its body directly, so the route does not validate it
 
 
 def test_health_is_503_while_the_marker_is_missing(client, staging_root):
@@ -324,6 +389,7 @@ def test_health_is_503_while_the_marker_is_missing(client, staging_root):
     assert response.status_code == 503
     assert response.json()['staging'] == {'ok': False, 'marker_present': False,
                                           'checked_seconds_ago': 0.0, 'paused': True}
+    Health.model_validate(response.json())
 
 
 def test_health_is_503_when_the_staging_check_is_stale(client, monotonic):
