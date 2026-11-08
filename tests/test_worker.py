@@ -235,16 +235,16 @@ def test_step_finishes_a_playlist_whose_expansion_fails(worker, db, media):
 
 
 def test_videos_item_downloads_media_to_the_root(worker, db, root, media, captions, notified, clock):
-    """A videos item downloads and publishes Title [id].mp4 at the staging root."""
+    """A videos item downloads and publishes id - Title.mp4 at the staging root."""
     job = submit(db, kind=store.JobKind.VIDEOS)
     assert worker.step(db) is testee.Step.PROCESSED
     item = item_of(db, job)
     assert item['state'] == 'done'
     assert item['title'] == 'A video'
-    assert item['media'] == {'outcome': 'downloaded', 'path': f'A video [{VIDEO}].mp4'}
+    assert item['media'] == {'outcome': 'downloaded', 'path': f'{VIDEO} - A video.mp4'}
     assert 'captions' not in item
-    assert (root / f'A video [{VIDEO}].mp4').read_bytes() == f'media {VIDEO}'.encode()
-    assert files(root) == [f'A video [{VIDEO}].mp4']
+    assert (root / f'{VIDEO} - A video.mp4').read_bytes() == f'media {VIDEO}'.encode()
+    assert files(root) == [f'{VIDEO} - A video.mp4']
     assert db.get_job(job['id'])['state'] == 'finished'
     assert [call[0] for call in media.calls] == ['info', 'download']
     assert media.calls[0] == ('info', f'https://www.youtube.com/watch?v={VIDEO}')
@@ -254,13 +254,13 @@ def test_videos_item_downloads_media_to_the_root(worker, db, root, media, captio
 
 def test_existing_media_is_not_downloaded_again(worker, db, root, media):
     """An MP4 with the video's ID, whatever its title, counts as existing and costs no request (C23)."""
-    (root / f'Old title [{VIDEO}].mp4').write_bytes(b'old')
+    (root / f'{VIDEO} - Old title.mp4').write_bytes(b'old')
     job = submit(db, kind=store.JobKind.VIDEOS)
     worker.step(db)
     item = item_of(db, job)
-    assert item['media'] == {'outcome': 'existing', 'path': f'Old title [{VIDEO}].mp4'}
+    assert item['media'] == {'outcome': 'existing', 'path': f'{VIDEO} - Old title.mp4'}
     assert media.calls == []
-    assert (root / f'Old title [{VIDEO}].mp4').read_bytes() == b'old'
+    assert (root / f'{VIDEO} - Old title.mp4').read_bytes() == b'old'
 
 
 def test_videos_with_captions_item_writes_a_pair(worker, db, root, captions):
@@ -270,10 +270,10 @@ def test_videos_with_captions_item_writes_a_pair(worker, db, root, captions):
     item = item_of(db, job)
     assert item['state'] == 'done'
     assert item['captions'] == {
-        'outcome': 'downloaded', 'path': f'A video [{VIDEO}].srt', 'track': {'code': 'en-US', 'kind': 'manual'},
+        'outcome': 'downloaded', 'path': f'{VIDEO} - A video.srt', 'track': {'code': 'en-US', 'kind': 'manual'},
     }
-    assert files(root) == [f'A video [{VIDEO}].mp4', f'A video [{VIDEO}].srt']
-    assert (root / f'A video [{VIDEO}].srt').read_text(encoding='utf-8').endswith('en-US\n')
+    assert files(root) == [f'{VIDEO} - A video.mp4', f'{VIDEO} - A video.srt']
+    assert (root / f'{VIDEO} - A video.srt').read_text(encoding='utf-8').endswith('en-US\n')
     assert captions.calls[0] == ('find', VIDEO, ('en', 'zh'))
     assert db.list_failures() == []
 
@@ -288,20 +288,20 @@ def test_generated_tracks_are_recorded_as_generated(worker, db, captions):
 
 def test_new_captions_keep_the_existing_mp4_stem(worker, db, root, media):
     """New captions pair with the single existing MP4, even after a title change (C33)."""
-    (root / f'Old title [{VIDEO}].mp4').touch()
+    (root / f'{VIDEO} - Old title.mp4').touch()
     job = submit(db)
     worker.step(db)
-    assert item_of(db, job)['captions']['path'] == f'Old title [{VIDEO}].srt'
+    assert item_of(db, job)['captions']['path'] == f'{VIDEO} - Old title.srt'
     assert media.calls == []
 
 
 def test_captions_job_pairs_with_an_existing_mp4_without_metadata(worker, db, root, media):
     """A captions job also pairs with an existing MP4, and needs no metadata request for its name."""
-    (root / f'Old title [{VIDEO}].mp4').touch()
+    (root / f'{VIDEO} - Old title.mp4').touch()
     job = submit(db, kind=store.JobKind.CAPTIONS)
     worker.step(db)
     item = item_of(db, job)
-    assert item['captions']['path'] == f'Old title [{VIDEO}].srt'
+    assert item['captions']['path'] == f'{VIDEO} - Old title.srt'
     assert 'media' not in item
     assert media.calls == []
 
@@ -311,7 +311,7 @@ def test_captions_job_uses_the_listed_title_without_metadata(worker, db, root, m
     job = submit_playlist(db, kind=store.JobKind.CAPTIONS)
     worker.step(db)
     worker.step(db)
-    assert item_of(db, job)['captions']['path'] == f'A list [{PLAYLIST}]/Listed A [{VIDEO}].srt'
+    assert item_of(db, job)['captions']['path'] == f'{PLAYLIST} - A list/{VIDEO} - Listed A.srt'
     assert media.calls[1:] == []
 
 
@@ -319,17 +319,17 @@ def test_captions_job_requests_metadata_when_no_title_is_known(worker, db, root,
     """Without a listed title or a single MP4, the title comes from a metadata request."""
     job = submit(db, kind=store.JobKind.CAPTIONS)
     worker.step(db)
-    assert item_of(db, job)['captions']['path'] == f'A video [{VIDEO}].srt'
+    assert item_of(db, job)['captions']['path'] == f'{VIDEO} - A video.srt'
     assert [call[0] for call in media.calls] == ['info']
 
 
 def test_existing_captions_are_not_fetched_again(worker, db, root, captions):
     """An existing SRT is judged on its own; the missing MP4 is still downloaded (DESIGN 5.4)."""
-    (root / f'Old [{VIDEO}].srt').touch()
+    (root / f'{VIDEO} - Old.srt').touch()
     job = submit(db)
     worker.step(db)
     item = item_of(db, job)
-    assert item['captions'] == {'outcome': 'existing', 'path': f'Old [{VIDEO}].srt', 'track': None}
+    assert item['captions'] == {'outcome': 'existing', 'path': f'{VIDEO} - Old.srt', 'track': None}
     assert item['media']['outcome'] == 'downloaded'
     assert captions.calls == []
 
@@ -372,7 +372,7 @@ def test_caption_service_error_after_media_leaves_the_item_done(worker, db, root
     assert (item['state'], item['media']['outcome'], item['captions']['outcome']) == ('done', 'downloaded', 'error')
     [failure] = db.list_failures()
     assert failure['phase'] == 'captions'
-    assert files(root) == [f'A video [{VIDEO}].mp4']
+    assert files(root) == [f'{VIDEO} - A video.mp4']
 
 
 def test_caption_service_error_fails_a_captions_item(worker, db, captions):
@@ -421,7 +421,7 @@ def test_unreadable_destination_fails_the_item_with_a_filesystem_failure(worker,
     """A destination that cannot be listed fails the item instead of counting as empty."""
     job = submit_playlist(db, kind=store.JobKind.CAPTIONS)
     worker.step(db)
-    (root / f'A list [{PLAYLIST}]').write_text('not a directory')
+    (root / f'{PLAYLIST} - A list').write_text('not a directory')
     worker.step(db)
     assert item_of(db, job)['state'] == 'failed'
     failure = db.list_failures()[0]
@@ -429,19 +429,19 @@ def test_unreadable_destination_fails_the_item_with_a_filesystem_failure(worker,
 
 
 def test_playlist_items_go_into_a_recreated_playlist_folder(worker, db, root):
-    """Playlist items are written into Title [playlistID]/, recreated if the user moved it away (DESIGN 5.4)."""
+    """Playlist items are written into playlistID - Title/, recreated if the user moved it away (DESIGN 5.4)."""
     job = submit_playlist(db)
     worker.step(db)
     worker.step(db)
-    folder = root / f'A list [{PLAYLIST}]'
+    folder = root / f'{PLAYLIST} - A list'
     # Media takes the title from the metadata request, which is the current title.
-    assert os.listdir(folder) == [f'A video [{VIDEO}].mp4']
-    (folder / f'A video [{VIDEO}].mp4').unlink()
+    assert os.listdir(folder) == [f'{VIDEO} - A video.mp4']
+    (folder / f'{VIDEO} - A video.mp4').unlink()
     folder.rmdir()
     worker.step(db)
-    assert os.listdir(folder) == [f'Other video [{OTHER}].mp4']
+    assert os.listdir(folder) == [f'{OTHER} - Other video.mp4']
     assert [item['media']['path'] for item in db.get_job(job['id'])['items']] == [
-        f'A list [{PLAYLIST}]/A video [{VIDEO}].mp4', f'A list [{PLAYLIST}]/Other video [{OTHER}].mp4',
+        f'{PLAYLIST} - A list/{VIDEO} - A video.mp4', f'{PLAYLIST} - A list/{OTHER} - Other video.mp4',
     ]
 
 
@@ -471,11 +471,11 @@ def test_a_later_success_supersedes_the_earlier_failure(worker, db, media):
 
 def test_a_competing_file_during_download_counts_as_existing(worker, db, root, media):
     """A file that appears at the target during the download is kept and reported as existing."""
-    media.during_download = lambda path: (root / f'A video [{VIDEO}].mp4').write_bytes(b'competing')
+    media.during_download = lambda path: (root / f'{VIDEO} - A video.mp4').write_bytes(b'competing')
     job = submit(db, kind=store.JobKind.VIDEOS)
     worker.step(db)
     assert item_of(db, job)['media']['outcome'] == 'existing'
-    assert (root / f'A video [{VIDEO}].mp4').read_bytes() == b'competing'
+    assert (root / f'{VIDEO} - A video.mp4').read_bytes() == b'competing'
 
 
 def test_a_marker_lost_during_download_publishes_nothing(worker, db, root, media):

@@ -36,44 +36,62 @@ def marker_present(root: Path) -> bool:
     return True
 
 
-def _id_tag(identifier: str) -> str:
-    """Return the ` [id]` tag that names and lookups share, with OS-reserved characters replaced."""
-    return f' [{replace_os_reserved_chars(identifier)}]'
+def _id_prefix(identifier: str) -> str:
+    """Return the ``id - `` prefix that names and lookups share, with OS-reserved characters replaced."""
+    return f'{replace_os_reserved_chars(identifier)} - '
+
+
+def _prefixed_name(title: str, identifier: str, suffix: str = '') -> str:
+    """Return ``id - title`` plus ``suffix``, truncating only the title so the name fits in the limit.
+
+    Raises:
+        ValueError: If no character of the title fits beside the prefix and suffix.
+    """
+    prefix = _id_prefix(identifier)
+    return prefix + build_filename(title, suffix, max_length=MAX_NAME_BYTES - len(prefix.encode()))
 
 
 def media_name(title: str, video_id: str) -> str:
-    """Return the media file name ``Title [id].mp4``, truncating only the title to fit.
+    """Return the media file name ``id - Title.mp4``, truncating only the title to fit.
 
     Raises:
-        ValueError: If no character of the title fits beside the ID tag and suffix.
+        ValueError: If no character of the title fits beside the ID prefix and suffix.
     """
-    return build_filename(title, MEDIA_SUFFIX, tag=_id_tag(video_id), max_length=MAX_NAME_BYTES)
+    return _prefixed_name(title, video_id, MEDIA_SUFFIX)
 
 
 def captions_name(title: str, video_id: str) -> str:
-    """Return the captions file name ``Title [id].srt``, truncating only the title to fit.
+    """Return the captions file name ``id - Title.srt``, truncating only the title to fit.
 
     Raises:
-        ValueError: If no character of the title fits beside the ID tag and suffix.
+        ValueError: If no character of the title fits beside the ID prefix and suffix.
     """
-    return build_filename(title, CAPTIONS_SUFFIX, tag=_id_tag(video_id), max_length=MAX_NAME_BYTES)
+    return _prefixed_name(title, video_id, CAPTIONS_SUFFIX)
 
 
 def playlist_dir_name(title: str, playlist_id: str) -> str:
-    """Return a playlist folder name ``Title [playlistID]``, truncating only the title to fit.
+    """Return a playlist folder name ``playlistID - Title``, truncating only the title to fit.
+
+    A folder name ends with free text, unlike a file name, so trailing dots and spaces are removed:
+    SMB shares do not accept them at the end of a name.
 
     Raises:
-        ValueError: If no character of the title fits beside the ID tag.
+        ValueError: If no character of the title fits beside the ID prefix, or none is left once
+            trailing dots and spaces are removed.
     """
-    return build_filename(title, tag=_id_tag(playlist_id), max_length=MAX_NAME_BYTES)
+    prefix = _id_prefix(playlist_id)
+    kept = _prefixed_name(title, playlist_id).removeprefix(prefix).rstrip('. ')
+    if not kept:
+        raise ValueError(f'Playlist title {title!r} has nothing left to keep in a folder name')
+    return prefix + kept
 
 
 def find_artifacts(directory: Path, video_id: str, suffix: str) -> list[Path]:
     """List the files in ``directory`` that are this video's artifact of one kind (decision C23).
 
-    A file counts when its name ends with `` [<id>]<suffix>``, whatever precedes it, so a file
-    keeps counting after the video's title changes. The ID is compared literally, never as a
-    pattern. Only regular files count, following symlinks; directories do not.
+    A file counts when its name starts with ``<id> - `` and ends with ``suffix``, whatever lies
+    between, so a file keeps counting after the video's title changes. The ID is compared literally,
+    never as a pattern. Only regular files count, following symlinks; directories do not.
 
     Args:
         directory: The destination directory: the staging root or a playlist folder.
@@ -86,12 +104,15 @@ def find_artifacts(directory: Path, video_id: str, suffix: str) -> list[Path]:
     Raises:
         OSError: If the directory exists but cannot be listed, or an entry cannot be checked.
     """
-    ending = _id_tag(video_id) + suffix
+    prefix = _id_prefix(video_id)
     try:
         entries = list(directory.iterdir())
     except FileNotFoundError:
         return []
-    return sorted(entry for entry in entries if entry.name.endswith(ending) and file_present(entry))
+    return sorted(
+        entry for entry in entries
+        if entry.name.startswith(prefix) and entry.name.endswith(suffix) and file_present(entry)
+    )
 
 
 def captions_name_for(title: str, video_id: str, existing_media: list[Path]) -> str:

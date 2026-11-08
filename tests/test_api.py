@@ -156,8 +156,8 @@ def test_submit_videos_returns_202_and_the_worker_downloads(client, staging_root
     assert (job['kind'], job['state'], job['target']) == ('videos', 'queued', {'type': 'video', 'id': VIDEO})
     finished = wait_until_finished(client, job)
     assert time.monotonic() - started < 10  # woken by the submission, not by the worker's idle timeout
-    assert finished['items'][0]['media'] == {'outcome': 'downloaded', 'path': f'A video [{VIDEO}].mp4'}
-    assert (staging_root / f'A video [{VIDEO}].mp4').read_bytes() == b'media'
+    assert finished['items'][0]['media'] == {'outcome': 'downloaded', 'path': f'{VIDEO} - A video.mp4'}
+    assert (staging_root / f'{VIDEO} - A video.mp4').read_bytes() == b'media'
 
 
 def test_submit_videos_with_captions_writes_both(client, staging_root):
@@ -165,7 +165,7 @@ def test_submit_videos_with_captions_writes_both(client, staging_root):
     job = client.post('/jobs/videos-with-captions', json={'url': VIDEO_URL, 'languages': ['en']}).json()
     finished = wait_until_finished(client, job)
     assert finished['items'][0]['captions']['outcome'] == 'downloaded'
-    assert (staging_root / f'A video [{VIDEO}].srt').exists()
+    assert (staging_root / f'{VIDEO} - A video.srt').exists()
 
 
 def test_submit_captions_expands_playlists(client, staging_root):
@@ -173,7 +173,7 @@ def test_submit_captions_expands_playlists(client, staging_root):
     job = client.post('/jobs/captions', json={'url': PLAYLIST_URL, 'languages': ['en-US', 'en']}).json()
     finished = wait_until_finished(client, job)
     assert [item['captions']['path'] for item in finished['items']] == [
-        f'A list [PLlist]/A video [{VIDEO}].srt', f'A list [PLlist]/Other [{OTHER}].srt',
+        f'PLlist - A list/{VIDEO} - A video.srt', f'PLlist - A list/{OTHER} - Other.srt',
     ]
 
 
@@ -213,7 +213,7 @@ def test_idempotency_key_replays_the_final_representation_after_removal(client, 
     body = {'url': VIDEO_URL, 'idempotency_key': 'k2'}
     job = client.post('/jobs/videos', json=body).json()
     wait_until_finished(client, job)
-    (staging_root / f'A video [{VIDEO}].mp4').unlink()
+    (staging_root / f'{VIDEO} - A video.mp4').unlink()
     assert client.get('/jobs').json()['jobs'] == []
     replay = client.post('/jobs/videos', json=body)
     assert replay.status_code == 200
@@ -228,7 +228,7 @@ def test_list_jobs_reconciles_and_reports_revision_and_time(client, staging_root
     assert [j['id'] for j in listed['jobs']] == [job['id']]
     assert listed['reconciled_at'] is not None
     assert listed['revision'] >= listed['jobs'][0]['revision']
-    (staging_root / f'A video [{VIDEO}].mp4').unlink()
+    (staging_root / f'{VIDEO} - A video.mp4').unlink()
     assert client.get('/jobs').json()['jobs'] == []
 
 
@@ -292,7 +292,7 @@ def test_change_feed_returns_410_below_the_pruned_revision(settings, media, mono
     with make_client(settings, media, monotonic) as client:
         job = client.post('/jobs/videos', json={'url': VIDEO_URL}).json()
         wait_until_finished(client, job)
-        (staging_root / f'A video [{VIDEO}].mp4').unlink()
+        (staging_root / f'{VIDEO} - A video.mp4').unlink()
         client.get('/jobs')  # removes the item and job, then prunes their tombstones at once
         client.get('/jobs')
         response = client.get('/jobs/changes', params={'since': 0})
