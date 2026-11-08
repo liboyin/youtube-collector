@@ -131,6 +131,8 @@ A `videos-with-captions` item downloads media first. If media fails, captions ar
 
 In a `captions` item, the captions are the whole purpose, so a caption-service error fails the item; `unavailable` remains a successful outcome.
 
+A requested artifact's outcome stays null when the item fails before that outcome is determined. An outcome already determined is kept: an artifact found `existing` before the failure stays `existing`. So when the destination directory cannot be listed, both outcomes stay null; when the metadata request fails, every outcome not already `existing` stays null; when media fails, the captions outcome stays null unless the captions already existed. Such an item is `failed`, and its failure record names the phase (5.9). Clients therefore treat a null outcome on a `failed` item as "not attempted"; on a `queued` or `running` item it means "not yet known".
+
 Item states are `queued`, `running`, `done` and `failed`. A failure in one item never stops the remaining items of its job (decision D17 at the source revision). Job states are `queued`, `expanding`, `running` and `finished`; a job whose playlist expansion fails becomes `finished` with no items and a failure record.
 
 ### 5.8 Status table and reconciliation with staging
@@ -230,7 +232,7 @@ It returns 200 when everything is healthy and 503 otherwise, with the same body 
 | `DELETE /failures/{id}` | Clear one failure |
 | `GET /health` | Service health and paused state (5.14) |
 
-An unknown job or failure returns 404. Validation errors return 422. Unexpected errors return a generic 500 and are logged, as at the source revision. Exact JSON schemas are left to implementation and are published through FastAPI's OpenAPI document.
+An unknown job or failure returns 404. Validation errors return 422. Unexpected errors return a generic 500 and are logged, as at the source revision. Exact JSON schemas are left to implementation. FastAPI's OpenAPI document, browsable at `/docs`, publishes the request bodies' schemas and describes every endpoint; responses are untyped JSON objects whose fields this document and the endpoint descriptions define. Typed response models wait until task [T29](tasks/open/T29.md)'s decisions settle the API.
 
 ## 7. Deployment and operation
 
@@ -294,7 +296,7 @@ Changed or dropped:
 
 ## 9. Engineering standards
 
-The repository adopts `youtube-whisperer`'s working standards: its AGENTS.md, the adversarial review and grouped task execution skills, the coverage gate, mypy and ruff, adapted on 2026-11-06 from `youtube-whisperer` revision `474f5dc`. The rationale for those standards is recorded in that revision's `DESIGN.md` under "Engineering governance" (decisions D1, D4 and D28–D44) and is not copied here. Adaptations: references to Redis, Azure and Whisper were replaced with the collector's own resources, the test-import rule names `youtube_collector`, and running anything against real YouTube needs the user's authorization for each run. Automated tests MUST NOT contact YouTube or read the Firefox profile, and MUST keep all reads and writes inside test-owned temporary directories, including the SQLite database. The worker thread, the reconciliation thread and long-poll waiters MUST be testable with injected clocks and explicit completion signals rather than elapsed-time waits.
+The repository adopts `youtube-whisperer`'s working standards: its AGENTS.md, the adversarial review and grouped task execution skills, the coverage gate, mypy and ruff, adapted on 2026-11-06 from `youtube-whisperer` revision `474f5dc`. The rationale for those standards is recorded in that revision's `DESIGN.md` under "Engineering governance" (decisions D1, D4 and D28–D44) and is not copied here. Adaptations: references to Redis, Azure and Whisper were replaced with the collector's own resources, the test-import rule names `youtube_collector`, and running anything against real YouTube needs the user's authorization for each run. [AGENTS](AGENTS.md#tests) and [tests/README.md](tests/README.md) own the testing rules, including what tests may read and write and the bounded wall-time checks they allow. As a design requirement, the worker thread, the reconciliation thread and long-poll waiters MUST be drivable in tests by injected clocks and explicit completion signals.
 
 ## 10. Integration with youtube-whisperer
 

@@ -6,7 +6,7 @@ Dependencies govern execution. A recorded task is not permission to combine unre
 
 ## Recommended order
 
-T29 (architecture decisions) comes first, because accepted proposals change the API that T25 would exercise; T26 then T27, and T28, are independent tooling work; T25 needs the user's authorization for a run against real YouTube; T10 collects host checks as tasks land; T14 waits for its revisit trigger.
+T29 (architecture decisions) comes first, because accepted proposals change the API that T25 would exercise; T26 then T27, and T28, are independent tooling work; T31 (typed response models) follows T29; T25 needs the user's authorization for a run against real YouTube; T10 collects host checks as tasks land; T14 waits for its revisit trigger.
 
 ## Shared constraints
 
@@ -23,3 +23,4 @@ Application modules live in `youtube_collector/`, one module per responsibility,
 - [T27](open/T27.md) — Medium. Commit the review tooling.
 - [T28](open/T28.md) — Medium. Shared test fixtures for owned threads and loopback servers.
 - [T29](open/T29.md) — High, decision pending. Decide the architecture review's proposals.
+- [T31](open/T31.md) — Low. Typed response models.
