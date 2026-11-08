@@ -480,6 +480,17 @@ class Store:
         revision: int = row[0]
         return revision
 
+    def check(self) -> None:
+        """Check that the database is readable and writable, for ``/health`` (DESIGN 5.14).
+
+        Takes the write lock with ``BEGIN IMMEDIATE``, reads a counter, and commits nothing.
+
+        Raises:
+            sqlite3.Error: If the database cannot be read or locked for writing.
+        """
+        with self._write() as connection:
+            self._read_meta(connection, 'revision')
+
     def current_revision(self) -> int:
         """Return the highest revision assigned so far."""
         return self._meta('revision')

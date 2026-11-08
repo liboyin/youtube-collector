@@ -2,7 +2,7 @@
 
 Download YouTube videos, playlists, and captions into a staging area, as a LAN-only HTTP service. [DESIGN.md](DESIGN.md) owns the requirements and design; [TODO.md](TODO.md) owns outstanding work; [AGENTS.md](AGENTS.md) owns working standards.
 
-**Status:** the development environment and the application's building blocks exist and are tested (URL parsing, caption matching, the staging layer, the SQLite store with its change feed, the yt-dlp and caption adapters, the worker, the reconciliation thread and long-poll wake-ups; [DESIGN section 14](DESIGN.md#14-architecture)). The HTTP API and the service entrypoint are not implemented yet, so the service cannot run. The sections below cover building, configuring and testing the repository.
+**Status:** the service is implemented and tested against fakes: the HTTP API, the YouTube worker and the reconciliation thread run in one process ([DESIGN section 14](DESIGN.md#14-architecture)). It has not yet been run against real YouTube ([TODO](TODO.md) T25), and the container-level checks are listed in T10. The sections below cover building, configuring, running and testing it.
 
 ## Security / trust model
 
@@ -20,7 +20,7 @@ No `.env` file is required, and the default configuration never mounts the real 
 
 ## Configuration
 
-Compose reads these **interpolation** variables from your shell or an optional, git-ignored `.env` file in the repository root. The service's own runtime settings will be added with the application.
+Compose reads these **interpolation** variables from your shell or an optional, git-ignored `.env` file in the repository root.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -29,8 +29,36 @@ Compose reads these **interpolation** variables from your shell or an optional, 
 | `APT_PROXY` | empty (none) | Optional apt caching proxy used during the image build. |
 | `PYPI_PROXY` | empty (none) | Optional PyPI proxy for every PyPI package the image installs, including the dev container's dev tools. `update-dependencies.sh` still resolves against PyPI. |
 | `BUILD_COMMON_CONTEXT` | pinned Git URL (`docker-build-common.git#v1.2.0`) | Shared build-helper source; a local clone avoids fetching that context. The build uses whatever the clone has checked out, so keep it at the tag `docker-compose.yaml` pins: an older checkout can lack helpers the Dockerfile calls, and a newer one builds with untested helpers. Check with `git -C <clone> describe --tags`. |
+| `COLLECTOR_PORT` | `8000` | Host port the service publishes on; the container listens on 8000. The service is unauthenticated, so publish it only on a trusted LAN. The dev containers publish no port. |
 
-The `collector_db` named volume, mounted at `/var/lib/youtube-collector`, will hold the service's SQLite database. It lives in local Docker storage rather than the staging share, and survives container recreation. `docker compose down -v` deletes it. The dev containers use `dev_db` instead and never mount `collector_db`. They also mount a `dev_persist` volume at `/home/ubuntu/persist`, which survives sessions and container rebuilds; `docker compose down -v` deletes it too. It holds Claude Code's settings, history, memory and sign-in (`CLAUDE_CONFIG_DIR`, which also moves `~/.claude.json`), and Codex's sessions and sign-in (`CODEX_HOME`). Because it holds both tools' credentials, treat it like your home directory. It stays on one machine: only the Git repository carries work between machines. The Compose service sets no fixed container name, and the two have different Compose project names: `youtube-collector-service` for the service, from the repository root's `docker-compose.yaml`, and `youtube-collector` for both dev container configurations, from their override. A `docker compose up` or `down` in the repository root therefore leaves the dev container alone. Setting `COMPOSE_PROJECT_NAME` in your shell or `.env` would override both names, so leave it unset.
+The `collector_db` named volume, mounted at `/var/lib/youtube-collector`, holds the service's SQLite database (`collector.sqlite3`). It lives in local Docker storage rather than the staging share, and survives container recreation. `docker compose down -v` deletes it. The dev containers use `dev_db` instead and never mount `collector_db`. They also mount a `dev_persist` volume at `/home/ubuntu/persist`, which survives sessions and container rebuilds; `docker compose down -v` deletes it too. It holds Claude Code's settings, history, memory and sign-in (`CLAUDE_CONFIG_DIR`, which also moves `~/.claude.json`), and Codex's sessions and sign-in (`CODEX_HOME`). Because it holds both tools' credentials, treat it like your home directory. It stays on one machine: only the Git repository carries work between machines. The Compose service sets no fixed container name, and the two have different Compose project names: `youtube-collector-service` for the service, from the repository root's `docker-compose.yaml`, and `youtube-collector` for both dev container configurations, from their override. A `docker compose up` or `down` in the repository root therefore leaves the dev container alone. Setting `COMPOSE_PROJECT_NAME` in your shell or `.env` would override both names, so leave it unset.
+
+The service reads its **runtime settings** from the environment; `docker-compose.yaml` sets the paths and passes the pacing, reconciliation, wait and retention variables through from `.env`. An empty or unset variable takes its default, and an invalid value stops the service at startup with a message naming it.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `COLLECTOR_STAGING_DIR` | required; Compose sets `/workspaces/youtube-collector/assets` | The staging area inside the container. It must contain the marker file `.youtube-collector-root`, which you create once at the root of the share; without it all work pauses (DESIGN 5.13). |
+| `COLLECTOR_DATABASE` | `/var/lib/youtube-collector/collector.sqlite3` | The SQLite file, on the `collector_db` volume. |
+| `COLLECTOR_SLEEP_REQUESTS` | `0` | Seconds yt-dlp sleeps between requests during extraction. |
+| `COLLECTOR_SLEEP_DOWNLOAD` | `0` | Seconds yt-dlp sleeps before each download, or the lower bound of a random range. |
+| `COLLECTOR_MAX_SLEEP_DOWNLOAD` | unset | The upper bound of that range. |
+| `COLLECTOR_RECONCILE_INTERVAL` | `30` | Seconds between reconciliation passes, which drop records whose files have left staging. |
+| `COLLECTOR_MAX_WAIT` | `60` | Cap on a long poll's `wait`, in seconds. |
+| `COLLECTOR_TOMBSTONE_RETENTION_DAYS` | `7` | Days removed records stay in the change feed. |
+| `COLLECTOR_HOST`, `COLLECTOR_PORT` | `0.0.0.0`, `8000` | Where the server listens inside the container; Compose does not pass these through. |
+| `COLLECTOR_SHUTDOWN_GRACE` | `30` | Seconds shutdown waits for the current download before abandoning it; restart recovery requeues it. Compose does not pass it through: the service's `stop_grace_period` (45 s) must stay above it plus 5 s, so change both in `docker-compose.yaml` together. |
+
+## Running the service
+
+Create the staging marker once (`touch <share>/.youtube-collector-root`), then build and start the service from the repository root on the host, since the dev container has no Docker:
+
+```sh
+docker compose build
+docker compose up -d
+curl http://localhost:8000/health   # 200 when the database, staging marker and threads are healthy, 503 otherwise
+```
+
+The interactive API documentation is at `http://<host>:8000/docs`. Submit work with `POST /jobs/videos`, `/jobs/captions` or `/jobs/videos-with-captions`, follow it with `GET /jobs/{id}?since=<view_revision>&wait=60` or the change feed `GET /jobs/changes?since=<cursor>&wait=60`, and review failures with `GET /failures`; [DESIGN section 6](DESIGN.md#6-http-api-summary) lists every endpoint. A running service downloads from YouTube with your cookies, so starting it is your decision; agents need your authorization for each run ([AGENTS.md](AGENTS.md#validation-and-review)). `docker compose stop` lets the current download finish for up to 30 seconds; an abandoned download restarts from scratch on the next start.
 
 ## Updating dependencies
 

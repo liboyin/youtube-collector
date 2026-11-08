@@ -2,7 +2,7 @@
 
 This document owns the product requirements, system design, product contracts and accepted user decisions. [README](README.md) covers setup and operation; [TODO](TODO.md) owns outstanding work and unresolved choices; [AGENTS](AGENTS.md) and the repository skills own working procedures.
 
-Status: accepted requirements, written 2026-11-06 as a product requirements document (originally `PRD.md`) in a design discussion held in the `youtube-whisperer` repository. They include assumptions that stand unless the user objects. **The service does not run yet**: sections 5, 6 and 10 describe intended behavior, not current behavior; section 7 records which deployment and development-environment parts the scaffolding tasks have implemented, and section 14 records the application components built so far. As components are built, record their architecture in section 14, and record later decisions with new IDs after the last one in section 11.
+Status: accepted requirements, written 2026-11-06 as a product requirements document (originally `PRD.md`) in a design discussion held in the `youtube-whisperer` repository. They include assumptions that stand unless the user objects. **The service is implemented but not yet run against real YouTube** (TODO T25): sections 5, 6 and 10 describe the required behavior, which the components in section 14 implement; section 7 records which deployment and development-environment parts the scaffolding tasks have implemented, and section 14 records the application components built so far. As components are built, record their architecture in section 14, and record later decisions with new IDs after the last one in section 11.
 
 Requirement words (MUST, SHOULD, MAY) follow BCP 14. Behavior inherited from `youtube-whisperer` cites that project at revision `474f5dc` (the "source revision"); it describes what the code did there, which the collector reimplements rather than imports.
 
@@ -247,18 +247,21 @@ An unknown job or failure returns 404. Validation errors return 422. Unexpected 
 - The user creates the staging marker (5.13) once, at the root of the share.
 - Each thread owns its own SQLite connection, and every write is one short transaction that also assigns the revision (decision C36).
 
-Implemented by T1, T2, T3, T4, T5, T8 and T13 ([records](completed_work/)): a Dockerfile with four stages from a digest-pinned `ubuntu:26.04`, using the shared helpers. `base` holds ca-certificates, ffmpeg, distro Python 3.14 and Deno copied from a digest-pinned `denoland/deno` binary image; `build` adds git and uv, checks `uv.lock` against `pyproject.toml` offline, and builds the locked venv at `/opt/venv` with the project as a regular package; `runtime` is `base` plus that venv, without git, uv, curl or the source tree; `dev` continues from `build` with curl, the dev group and an editable project. The single Compose service `app`, in Compose project `youtube-collector-service`, has the staging, read-only Firefox-profile and `collector_db` mounts (the database directory is `/var/lib/youtube-collector`) and no fixed container name. The devcontainer, in Compose project `youtube-collector`, replaces those mounts with development-only volumes, offers the opt-in real-data configuration, pins its feature to a major version with a committed lock, and its creation hook checks the lock offline and records GitHub's SSH host keys. `./update-dependencies.sh yt-dlp` fulfils the yt-dlp update as C29 restates it; rebuilding the image on the host deploys it. [TODO](TODO.md) tracks the remaining review tasks. The service entrypoint and published port are added with the API. [README](README.md) owns setup and configuration.
+Implemented by T1, T2, T3, T4, T5, T8 and T13 ([records](completed_work/)): a Dockerfile with four stages from a digest-pinned `ubuntu:26.04`, using the shared helpers. `base` holds ca-certificates, ffmpeg, distro Python 3.14 and Deno copied from a digest-pinned `denoland/deno` binary image; `build` adds git and uv, checks `uv.lock` against `pyproject.toml` offline, and builds the locked venv at `/opt/venv` with the project as a regular package; `runtime` is `base` plus that venv, without git, uv, curl or the source tree; `dev` continues from `build` with curl, the dev group and an editable project. The single Compose service `app`, in Compose project `youtube-collector-service`, has the staging, read-only Firefox-profile and `collector_db` mounts (the database directory is `/var/lib/youtube-collector`) and no fixed container name. The devcontainer, in Compose project `youtube-collector`, replaces those mounts with development-only volumes, offers the opt-in real-data configuration, pins its feature to a major version with a committed lock, and its creation hook checks the lock offline and records GitHub's SSH host keys. `./update-dependencies.sh yt-dlp` fulfils the yt-dlp update as C29 restates it; rebuilding the image on the host deploys it. [TODO](TODO.md) tracks the remaining review tasks. T24 added the service command (`python3 -m youtube_collector`), its environment, the published port (`COLLECTOR_PORT`, default 8000), `restart: unless-stopped` and a 45-second stop grace period; the dev container resets the port and restart policy. [README](README.md) owns setup and configuration.
 
-Configuration (environment variable names are to be chosen during implementation):
+Configuration, read from the environment by `config.Settings` (T24); [README](README.md#configuration) owns the full table:
 
-| Setting | Assumed default |
-|---|---|
-| Staging directory inside the container | required |
-| Database path | a file on the named volume |
-| YouTube request pacing | yt-dlp's defaults (no extra sleep) |
-| Reconciliation interval | 30 seconds |
-| Long-poll maximum wait | 60 seconds |
-| Tombstone retention | 7 days |
+| Setting | Variable | Default |
+|---|---|---|
+| Staging directory inside the container | `COLLECTOR_STAGING_DIR` | required |
+| Database path | `COLLECTOR_DATABASE` | `collector.sqlite3` on the named volume |
+| YouTube request pacing | `COLLECTOR_SLEEP_REQUESTS`, `COLLECTOR_SLEEP_DOWNLOAD`, `COLLECTOR_MAX_SLEEP_DOWNLOAD` | yt-dlp's defaults (no extra sleep) |
+| Reconciliation interval | `COLLECTOR_RECONCILE_INTERVAL` | 30 seconds |
+| Long-poll maximum wait | `COLLECTOR_MAX_WAIT` | 60 seconds |
+| Tombstone retention | `COLLECTOR_TOMBSTONE_RETENTION_DAYS` | 7 days |
+| Shutdown grace for the current download (C36) | `COLLECTOR_SHUTDOWN_GRACE` | 30 seconds |
+
+Implementation defaults that are not settings (C35): `GET /jobs` waits up to 2 seconds for the reconciliation pass it requested; a cached staging check older than 120 seconds counts as unhealthy; uvicorn gives open requests 5 seconds after SIGTERM.
 
 ## 8. Behavior carried over and dropped
 
@@ -399,7 +402,7 @@ These follow from repository evidence or the discussion, and stand unless the us
 
 The application is one package, `youtube_collector`, with one module per responsibility. API request handlers never touch the staging share (C25): only the worker and the reconciliation thread call the staging layer.
 
-Implemented (pure or filesystem-only building blocks; nothing composes them into a service yet):
+Implemented:
 
 | Module | Responsibility | Task |
 |---|---|---|
@@ -413,5 +416,8 @@ Implemented (pure or filesystem-only building blocks; nothing composes them into
 | `worker` | The YouTube worker thread: round-robin units, the marker pause, `NEVER` checks before network work, staged downloads, caption outcomes by job kind, throttled progress and restart recovery (5.3, 5.4, 5.7, 5.10, 5.12, 5.13) | [T21](completed_work/T21.md) |
 | `reconcile` | The reconciliation thread: periodic and requested passes that remove items whose recorded files are gone and finished jobs left with nothing, with the marker checked before and after probing; cached marker results and pass times that the API reads without touching the share (5.8, 5.13, 5.14, C25, C26) | [T22](completed_work/T22.md) |
 | `notify` | Thread-safe wake-ups for long-poll waiters on the event loop: tickets taken before each database read, so no change committed during a read is missed (5.10) | [T23](completed_work/T23.md) |
+| `config` | Settings from the environment with section 7's defaults; the only module that reads the environment | [T24](completed_work/T24.md) |
+| `api` | The FastAPI app and the service's composition: every endpoint in section 6, the lifespan that starts and stops both threads, database calls on one dedicated thread, long polls on the event loop, and health from cached results (5.1, 5.8, 5.10, 5.14, C25, C36) | [T24](completed_work/T24.md) |
+| `__main__` | `python3 -m youtube_collector`: one uvicorn process | [T24](completed_work/T24.md) |
 
-Planned in [TODO](TODO.md#active-backlog): the HTTP API, configuration and entrypoint (T24).
+The first run against real YouTube is [TODO](TODO.md#active-backlog) T25.

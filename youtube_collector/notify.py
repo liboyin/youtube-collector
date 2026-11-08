@@ -24,7 +24,10 @@ class Notifier:
     a change committed after the read but before the wait has then already set that ticket.
 
     Args:
-        monotonic: The clock ``long_poll`` measures its timeout on; injected for tests.
+        monotonic: The clock ``long_poll`` measures its deadline on. Waiting itself uses asyncio's
+            clock, so this must advance in real time like it; the default does. Inject a fake only
+            in tests that also control how long each read takes; a clock that never advances makes
+            ``long_poll`` wait forever.
     """
 
     def __init__(self, monotonic: Callable[[], float] = time.monotonic) -> None:

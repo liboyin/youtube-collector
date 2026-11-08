@@ -189,6 +189,25 @@ def test_write_rolls_back_every_statement_when_one_fails(store):
     assert store.get_job(job['id'])['items'] == []
 
 
+def test_check_passes_on_a_writable_database_and_changes_nothing(store):
+    """The health check succeeds without taking a revision."""
+    store.check()
+    assert store.current_revision() == 0
+
+
+def test_check_fails_while_another_connection_holds_the_write_lock(db_path, clock):
+    """A database that cannot be locked for writing fails the check."""
+    other = sqlite3.connect(db_path, timeout=0, autocommit=True)
+    try:
+        other.execute('BEGIN IMMEDIATE')
+        with testee.Store(db_path, clock) as store:
+            store._connection.execute('PRAGMA busy_timeout = 0')
+            with pytest.raises(sqlite3.OperationalError):
+                store.check()
+    finally:
+        other.close()
+
+
 def test_current_revision_counts_every_change(store, db_path):
     """Every record change takes the next revision, and each row keeps its latest one."""
     assert store.current_revision() == 0

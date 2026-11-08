@@ -19,6 +19,10 @@ services:
   app:
     build:
       target: dev
+    # The dev container runs its own command (devcontainer.json's overrideCommand), publishes no
+    # port, so it never collides with the service on the host, and is not restarted by Docker.
+    ports: !reset []
+    restart: "no"
     # Claude Code and Codex state lives on the dev_persist volume, which survives sessions and
     # rebuilds on this machine; only `docker compose down -v` deletes it. The creation hook creates
     # these directories. CLAUDE_CONFIG_DIR also moves ~/.claude.json, so Claude Code's settings,
