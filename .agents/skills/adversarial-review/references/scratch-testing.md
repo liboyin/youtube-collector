@@ -1,6 +1,6 @@
 # Scratch Testing Recipe
 
-Use this recipe when the [review procedure](../SKILL.md#procedure) requires scratch execution. It supplies examples, not a substitute for AGENTS' test-ownership rules.
+Use this recipe when the [review procedure](../SKILL.md#procedure) requires scratch execution. It supplies examples, not a substitute for AGENTS' test-ownership rules. [mutate.py](mutate.py) applies it to a batch of mutants: an owned copy of the tracked files and the untracked files named to it, a per-mutant test selection, fresh processes, the provenance check, failure details that separate behavior from broken code, and the thread listing. Its test selections still need the choices this recipe describes.
 
 Create a scratch copy only when writable execution is needed. Within one agent's assessment of a fixed candidate, reuse one owned scratch tree for focused checks and mutants where practical, restoring the candidate before each mutation and using fresh test processes. Do not share a writable scratch tree between agents. A new assessment must use its current candidate; changing import-lifecycle requirements may justify a separate copy. Evidence inspection alone needs no scratch copy.
 
