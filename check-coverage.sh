@@ -14,7 +14,7 @@
 #                       Defaults to 80 when unset or empty; an invalid value fails before pytest runs.
 #
 # Run from the repository root: the gate also refuses to run unless python3 matches the version
-# that .python-version pins.
+# that .python-version pins and youtube_collector resolves to this tree's package.
 set -uo pipefail
 
 threshold="${COVERAGE_THRESHOLD:-80}"
@@ -57,6 +57,25 @@ pin, actual = pins[0], platform.python_version()
 if actual != pin and not actual.startswith(f'{pin}.'):
     sys.exit(f"check-coverage: python3 is Python {actual}, but .python-version pins {pin}; "
              "rebuild the dev container so its venv uses the pinned interpreter")
+PY
+
+# Measure only the package in this tree. pytest does not put the working directory on sys.path, so
+# in a separate git worktree the dev container's editable install would supply the main tree's
+# package, and the gate would pass on the wrong files. -P gives this check that same sys.path:
+# without it, python3 reading its program from stdin would look in the working directory first.
+python3 -P - <<'PY' || exit 1
+"""Exit with a message unless youtube_collector resolves to the working directory's package."""
+import importlib.util
+import sys
+from pathlib import Path
+
+spec = importlib.util.find_spec('youtube_collector')
+origin = None if spec is None else spec.origin
+expected = (Path.cwd() / 'youtube_collector').resolve()
+actual = None if origin is None else Path(origin).resolve().parent
+if actual != expected:
+    sys.exit(f"check-coverage: youtube_collector resolves to {actual}, not {expected}; "
+             "set PYTHONPATH to this tree's root so the gate measures this tree")
 PY
 
 report="$(mktemp -t coverage-XXXXXXXX.json)"

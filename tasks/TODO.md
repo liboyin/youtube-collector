@@ -6,7 +6,7 @@ Dependencies govern execution. A recorded task is not permission to combine unre
 
 ## Recommended order
 
-T26 then T27, and T28, are independent tooling work; T31 is ready now that the API has settled; T25 needs the user's authorization for a run against real YouTube; T10 collects host checks as tasks land; T14 waits for its revisit trigger.
+T27 and T28 are independent tooling work; T31 is ready now that the API has settled; T25 needs the user's authorization for a run against real YouTube; T10 collects host checks as tasks land; T14 waits for its revisit trigger.
 
 ## Shared constraints
 
@@ -19,7 +19,6 @@ Application modules live in `youtube_collector/`, one module per responsibility,
 - [T10](open/T10.md) — Low. Host checks that need Docker.
 - [T14](open/T14.md) — Low, deferred. Let COVERAGE_THRESHOLD lower the coverage gate.
 - [T25](open/T25.md) — Low. First end-to-end run against real YouTube.
-- [T26](open/T26.md) — Medium. Make the coverage gate refuse a foreign package.
 - [T27](open/T27.md) — Medium. Commit the review tooling.
 - [T28](open/T28.md) — Medium. Shared test fixtures for owned threads and loopback servers.
 - [T31](open/T31.md) — Low. Typed response models.

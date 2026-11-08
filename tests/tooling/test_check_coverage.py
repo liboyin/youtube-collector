@@ -63,7 +63,10 @@ def python3_version():
 MATCHING_PIN = object()
 
 
-def run_gate(runner, *, coverage_report=None, pytest_status=0, threshold=None, args=(), python_version=MATCHING_PIN):
+def run_gate(
+    runner, *, coverage_report=None, pytest_status=0, threshold=None, args=(), python_version=MATCHING_PIN,
+    package_root=None,
+):
     """Run the gate through the shared owned-subprocess runner with a ``pytest`` stub first on ``PATH``.
 
     The stub never runs tests: it records its arguments, copies the synthetic report (if any) to
@@ -77,6 +80,8 @@ def run_gate(runner, *, coverage_report=None, pytest_status=0, threshold=None, a
         args: Arguments forwarded to the gate.
         python_version: Content of the ``.python-version`` written to the working directory; by
             default the major and minor version of the gate's ``python3``, or None to write no file.
+        package_root: Directory the child's ``youtube_collector`` resolves from, through ``PYTHONPATH``;
+            by default the working directory, which then holds an empty package.
 
     Returns:
         The completed process and the stub's recorded arguments, or None if the stub never ran.
@@ -86,6 +91,8 @@ def run_gate(runner, *, coverage_report=None, pytest_status=0, threshold=None, a
         python_version = '.'.join(actual.split('.')[:2]) + '\n'
     if python_version is not None:
         (runner.cwd / '.python-version').write_text(python_version, encoding='utf-8')
+    (runner.cwd / 'youtube_collector').mkdir()
+    (runner.cwd / 'youtube_collector' / '__init__.py').touch()
     stub_dir = runner.cwd / 'bin'
     stub_dir.mkdir()
     invocations = runner.cwd / 'pytest-invocation'
@@ -108,7 +115,9 @@ def run_gate(runner, *, coverage_report=None, pytest_status=0, threshold=None, a
         encoding='utf-8',
     )
     stub.chmod(0o755)
-    env = {} if threshold is None else {'COVERAGE_THRESHOLD': threshold}
+    env = {'PYTHONPATH': str(package_root or runner.cwd)}
+    if threshold is not None:
+        env['COVERAGE_THRESHOLD'] = threshold
     result = runner(SCRIPT, *args, path_dirs=(stub_dir, Path(python3).parent), env=env)
     # The gate must remove its mktemp report from the owned TMPDIR on every path.
     assert list(runner.temp.iterdir()) == []
@@ -132,6 +141,30 @@ def test_invalid_threshold_fails_clearly_without_running_pytest(run_shell_script
     assert result.stderr.startswith('check-coverage: COVERAGE_THRESHOLD')
     assert repr(threshold) in result.stderr
     assert result.stdout == ''
+
+
+def test_a_package_from_another_tree_fails_without_running_pytest(run_shell_script, tmp_path_factory):
+    """A youtube_collector that resolves elsewhere stops the gate, naming both locations."""
+    other = tmp_path_factory.mktemp('other-tree')
+    (other / 'youtube_collector').mkdir()
+    (other / 'youtube_collector' / '__init__.py').touch()
+
+    result, recorded = run_gate(run_shell_script, coverage_report=PASSING_REPORT, package_root=other)
+
+    assert recorded is None
+    assert result.returncode != 0
+    assert result.stderr.startswith('check-coverage: youtube_collector resolves to')
+    assert str((other / 'youtube_collector').resolve()) in result.stderr
+    assert str((run_shell_script.cwd / 'youtube_collector').resolve()) in result.stderr
+    assert 'PYTHONPATH' in result.stderr
+
+
+def test_the_working_tree_package_runs_pytest(run_shell_script):
+    """A package resolving to the working directory passes the check and reaches pytest."""
+    result, recorded = run_gate(run_shell_script, coverage_report=PASSING_REPORT)
+
+    assert result.returncode == 0, result.stderr
+    assert recorded is not None
 
 
 def test_matching_pins_run_pytest(run_shell_script):
