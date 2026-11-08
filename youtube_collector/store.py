@@ -1,10 +1,9 @@
-"""The SQLite store: jobs, items, failures, idempotency keys, revisions and tombstones.
+"""The SQLite store: jobs, their items, and failures.
 
 SQLite is the source of truth (DESIGN 5.10). Every write is one short ``BEGIN IMMEDIATE``
-transaction that also assigns revisions (decision C36): each record it changes, including a removal,
-takes the next value of one global counter, so a record's row always carries its latest revision.
-Removal sets ``removed_at`` and leaves the row as a tombstone holding the record's final state,
-until ``prune`` deletes it.
+transaction (decision C36). Finished jobs are kept for a retention period, whatever has happened to
+their files, and are deleted when a later submission finds them expired (decisions C40 and C42).
+Failures are deleted when they are cleared or superseded, and outlive the job they came from.
 
 Each thread opens its own ``Store``; sqlite3's thread check stays on, so a connection used from
 another thread raises instead of corrupting a transaction.
@@ -25,15 +24,11 @@ from typing import Self
 from youtube_collector.categories import Category
 
 __all__ = [
-    'KEY_RETENTION_SECONDS', 'SCHEMA_VERSION', 'CaptionsOutcome', 'ChangePage', 'CursorPruned', 'IdempotencyConflict',
-    'ItemFiles', 'ItemResult', 'JobView', 'Snapshot',
-    'ItemState', 'JobKind', 'JobState', 'MediaOutcome', 'NewFailure', 'Phase', 'PlaylistEntry', 'Store',
-    'Submission', 'TargetType', 'TrackKind', 'WorkItem', 'WorkUnit', 'initialize',
+    'SCHEMA_VERSION', 'CaptionsOutcome', 'ItemResult', 'ItemState', 'JobKind', 'JobState', 'MediaOutcome',
+    'NewFailure', 'Phase', 'PlaylistEntry', 'Store', 'TargetType', 'TrackKind', 'WorkItem', 'WorkUnit', 'initialize',
 ]
 
-SCHEMA_VERSION = 1
-# DESIGN 5.1 and C24: keys outlive their job by at least seven days, whatever the tombstone retention is.
-KEY_RETENTION_SECONDS = 7 * 24 * 60 * 60
+SCHEMA_VERSION = 2
 _BUSY_TIMEOUT_SECONDS = 30.0
 
 type Record = dict[str, object]
@@ -126,23 +121,6 @@ class _Artifact(StrEnum):
 
 _DEFINITIVE_MEDIA = frozenset({MediaOutcome.DOWNLOADED, MediaOutcome.EXISTING})
 _DEFINITIVE_CAPTIONS = frozenset({CaptionsOutcome.DOWNLOADED, CaptionsOutcome.EXISTING, CaptionsOutcome.UNAVAILABLE})
-
-
-class IdempotencyConflict(Exception):
-    """Raised when an idempotency key is reused with a different request body."""
-
-
-class CursorPruned(Exception):
-    """Raised when a change-feed cursor is below the pruned-through revision (decision C27).
-
-    Attributes:
-        pruned_through: The highest revision pruning has deleted.
-    """
-
-    def __init__(self, pruned_through: int) -> None:
-        """Record the pruned-through revision."""
-        super().__init__(f'Changes up to revision {pruned_through} were pruned; resynchronize')
-        self.pruned_through = pruned_through
 
 
 @dataclass(frozen=True)
@@ -240,82 +218,7 @@ class WorkUnit:
     item: WorkItem | None
 
 
-@dataclass(frozen=True)
-class ItemFiles:
-    """A done or failed item and the staging-relative files it produced or found existing.
-
-    Attributes:
-        item_id: The item's ID.
-        job_id: Its job's ID.
-        paths: Its recorded media and captions paths; empty when it recorded none.
-    """
-
-    item_id: str
-    job_id: str
-    paths: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class Submission:
-    """The result of a submission.
-
-    Attributes:
-        job: The job's representation, with its items.
-        created: False when an idempotency key returned an earlier job.
-    """
-
-    job: Record
-    created: bool
-
-
-@dataclass(frozen=True)
-class ChangePage:
-    """One page of the change feed (DESIGN 5.10, decision C38).
-
-    Attributes:
-        entries: Changed records, each once in its latest state, ordered by revision. Each entry has
-            ``kind`` (``job``, ``item`` or ``failure``), ``id``, ``revision``, ``removed`` and ``record``;
-            job records carry no items.
-        cursor: The ``since`` for the next page: the last revision on this page, or the requested
-            ``since`` when the page is empty.
-        more: Whether further changes remain beyond this page.
-    """
-
-    entries: tuple[Record, ...]
-    cursor: int
-    more: bool
-
-
-@dataclass(frozen=True)
-class Snapshot:
-    """Records read in one transaction, with the revision they were read at (decision C38).
-
-    Attributes:
-        records: The records.
-        revision: The highest revision assigned when they were read.
-    """
-
-    records: tuple[Record, ...]
-    revision: int
-
-
-@dataclass(frozen=True)
-class JobView:
-    """A live job with its items, and the revision of that view.
-
-    Attributes:
-        job: The job's representation with its live items.
-        revision: The highest revision among the job and all its items, removed ones included, so an
-            item's removal counts as a change to the job.
-    """
-
-    job: Record
-    revision: int
-
-
 _SCHEMA = """
-CREATE TABLE meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL) STRICT;
-INSERT INTO meta (key, value) VALUES ('revision', 0), ('pruned_through', 0);
 CREATE TABLE jobs (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
     id TEXT NOT NULL UNIQUE,
@@ -328,13 +231,12 @@ CREATE TABLE jobs (
     playlist_title TEXT,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL,
-    revision INTEGER NOT NULL UNIQUE,
-    removed_at REAL
+    finished_at REAL
 ) STRICT;
+CREATE INDEX jobs_by_finished_at ON jobs (finished_at);
 CREATE TABLE items (
     id TEXT PRIMARY KEY,
     job_id TEXT NOT NULL,
-    job_kind TEXT NOT NULL,
     position INTEGER NOT NULL,
     video_id TEXT NOT NULL,
     title TEXT,
@@ -345,12 +247,8 @@ CREATE TABLE items (
     captions_path TEXT,
     track_code TEXT,
     track_kind TEXT,
-    downloaded_bytes INTEGER,
-    total_bytes INTEGER,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL,
-    revision INTEGER NOT NULL UNIQUE,
-    removed_at REAL,
     UNIQUE (job_id, position)
 ) STRICT;
 CREATE INDEX items_by_job ON items (job_id, position);
@@ -368,21 +266,10 @@ CREATE TABLE failures (
     artifact TEXT NOT NULL,
     category TEXT NOT NULL,
     message TEXT NOT NULL,
-    created_at REAL NOT NULL,
-    updated_at REAL NOT NULL,
-    revision INTEGER NOT NULL UNIQUE,
-    removed_at REAL,
-    removal TEXT
+    created_at REAL NOT NULL
 ) STRICT;
 CREATE INDEX failures_by_video ON failures (video_id, artifact);
 CREATE INDEX failures_by_job ON failures (job_id);
-CREATE TABLE idempotency_keys (
-    key TEXT PRIMARY KEY,
-    body TEXT NOT NULL,
-    job_id TEXT NOT NULL,
-    final TEXT,
-    expires_at REAL
-) STRICT;
 """
 
 
@@ -451,7 +338,7 @@ class Store:
         """Close the connection."""
         self.close()
 
-    # Transactions and revisions
+    # Transactions
 
     @contextmanager
     def _write(self) -> Iterator[sqlite3.Connection]:
@@ -473,47 +360,29 @@ class Store:
         finally:
             self._connection.execute('COMMIT')
 
-    @staticmethod
-    def _next_revision(connection: sqlite3.Connection) -> int:
-        """Take the next revision; only call inside a write transaction."""
-        row = connection.execute("UPDATE meta SET value = value + 1 WHERE key = 'revision' RETURNING value").fetchone()
-        revision: int = row[0]
-        return revision
-
     def check(self) -> None:
         """Check that the database is readable and writable, for ``/health`` (DESIGN 5.14).
 
-        Takes the write lock with ``BEGIN IMMEDIATE``, reads a counter, and commits nothing.
+        Takes the write lock with ``BEGIN IMMEDIATE``, reads a row, and commits nothing.
 
         Raises:
             sqlite3.Error: If the database cannot be read or locked for writing.
         """
         with self._write() as connection:
-            self._read_meta(connection, 'revision')
-
-    def current_revision(self) -> int:
-        """Return the highest revision assigned so far."""
-        return self._meta('revision')
-
-    def pruned_through(self) -> int:
-        """Return the highest revision that pruning has deleted (decision C27)."""
-        return self._meta('pruned_through')
-
-    def _meta(self, key: str) -> int:
-        """Read one counter from the meta table."""
-        return self._read_meta(self._connection, key)
+            connection.execute('SELECT 1 FROM jobs LIMIT 1').fetchone()
 
     # Submission
 
     def submit(
         self, *, kind: JobKind, url: str, target_type: TargetType, target_id: str,
-        languages: Sequence[str] | None, idempotency_key: str | None = None, body: str | None = None,
-    ) -> Submission:
-        """Create a job, or return the job an idempotency key already names (DESIGN 5.1).
+        languages: Sequence[str] | None, retention_seconds: float,
+    ) -> Record:
+        """Create a job and return its representation, first deleting jobs past their retention.
 
         A single-video job gets its one item at once; a playlist job gets its items on expansion.
-        With a key, the same key and body return the earlier job: live with its items, or its final
-        representation once it has been removed (decision C34). An expired key is forgotten first.
+        Only submissions add records, so deleting expired jobs here bounds the table without a
+        background task (decision C42). An unfinished job has no ``finished_at`` and never expires.
+        Failures are kept: they stay until cleared or superseded (DESIGN 5.8).
 
         Args:
             kind: The job kind.
@@ -521,153 +390,69 @@ class Store:
             target_type: Whether the URL names a video or a playlist.
             target_id: The video or playlist ID.
             languages: Caption language candidates, or None for a ``videos`` job.
-            idempotency_key: The caller's key, if any.
-            body: The canonical request body the key is compared on; required with a key.
+            retention_seconds: How long a finished job stays readable.
 
         Returns:
-            The job and whether it was created.
-
-        Raises:
-            IdempotencyConflict: If the key is retained with a different body.
-            ValueError: If a key is given without a body.
+            The new job, with its items.
         """
-        if idempotency_key is not None and body is None:
-            raise ValueError('An idempotency key needs the canonical request body')
         with self._write() as connection:
             now = self._clock()
-            if idempotency_key is not None:
-                connection.execute(
-                    'DELETE FROM idempotency_keys WHERE key = ? AND expires_at <= ?', (idempotency_key, now),
-                )
-                key_row = connection.execute(
-                    'SELECT body, job_id, final FROM idempotency_keys WHERE key = ?', (idempotency_key,),
-                ).fetchone()
-                if key_row is not None:
-                    if key_row['body'] != body:
-                        raise IdempotencyConflict(f'Idempotency key {idempotency_key!r} was used with another body')
-                    if key_row['final'] is not None:
-                        return Submission(json.loads(key_row['final']), created=False)
-                    return Submission(self._job_record(connection, key_row['job_id']), created=False)
+            cutoff = now - retention_seconds
+            connection.execute(
+                'DELETE FROM items WHERE job_id IN (SELECT id FROM jobs WHERE finished_at <= ?)', (cutoff,),
+            )
+            connection.execute('DELETE FROM jobs WHERE finished_at <= ?', (cutoff,))
             job_id = uuid.uuid4().hex
             connection.execute(
-                'INSERT INTO jobs (id, kind, url, target_type, target_id, languages, state, created_at, updated_at,'
-                ' revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                'INSERT INTO jobs (id, kind, url, target_type, target_id, languages, state, created_at, updated_at)'
+                ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
                 (job_id, kind, url, target_type, target_id, None if languages is None else json.dumps(list(languages)),
-                 JobState.QUEUED, now, now, self._next_revision(connection)),
+                 JobState.QUEUED, now, now),
             )
             if target_type is TargetType.VIDEO:
-                self._insert_item(connection, job_id, kind, 0, PlaylistEntry(target_id), now)
-            if idempotency_key is not None:
-                connection.execute(
-                    'INSERT INTO idempotency_keys (key, body, job_id) VALUES (?, ?, ?)',
-                    (idempotency_key, body, job_id),
-                )
-            return Submission(self._job_record(connection, job_id), created=True)
+                self._insert_item(connection, job_id, 0, PlaylistEntry(target_id), now)
+            return self._job_record(connection, job_id)
 
+    @staticmethod
     def _insert_item(
-        self, connection: sqlite3.Connection, job_id: str, kind: JobKind, position: int, entry: PlaylistEntry,
-        now: float,
+        connection: sqlite3.Connection, job_id: str, position: int, entry: PlaylistEntry, now: float,
     ) -> None:
-        """Insert one queued item with the next revision."""
+        """Insert one queued item."""
         connection.execute(
-            'INSERT INTO items (id, job_id, job_kind, position, video_id, title, state, created_at, updated_at,'
-            ' revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            (uuid.uuid4().hex, job_id, kind, position, entry.video_id, entry.title, ItemState.QUEUED, now, now,
-             self._next_revision(connection)),
+            'INSERT INTO items (id, job_id, position, video_id, title, state, created_at, updated_at)'
+            ' VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            (uuid.uuid4().hex, job_id, position, entry.video_id, entry.title, ItemState.QUEUED, now, now),
         )
 
     # Reads
 
     def get_job(self, job_id: str) -> Record | None:
-        """Return a job in the status table with its items, or None when it is unknown or removed."""
+        """Return a job with its items and uncleared failures, or None when it is unknown or deleted."""
         with self._read() as connection:
-            row = connection.execute('SELECT * FROM jobs WHERE id = ? AND removed_at IS NULL', (job_id,)).fetchone()
+            row = connection.execute('SELECT id FROM jobs WHERE id = ?', (job_id,)).fetchone()
             return None if row is None else self._job_record(connection, job_id)
 
     def list_jobs(self) -> list[Record]:
-        """Return the status table: every job not removed, in submission order, with its items."""
+        """Return the status table: every retained job, in submission order."""
         with self._read() as connection:
-            ids = [row['id'] for row in connection.execute('SELECT id FROM jobs WHERE removed_at IS NULL ORDER BY seq')]
+            ids = [row['id'] for row in connection.execute('SELECT id FROM jobs ORDER BY seq')]
             return [self._job_record(connection, job_id) for job_id in ids]
 
     def list_failures(self) -> list[Record]:
         """Return every uncleared failure, oldest first."""
-        rows = self._connection.execute('SELECT * FROM failures WHERE removed_at IS NULL ORDER BY seq')
-        return [_failure_record(row) for row in rows]
-
-    def jobs_snapshot(self) -> Snapshot:
-        """Return the status table with the revision it was read at, from one read transaction."""
-        with self._read() as connection:
-            ids = [row['id'] for row in connection.execute('SELECT id FROM jobs WHERE removed_at IS NULL ORDER BY seq')]
-            jobs = tuple(self._job_record(connection, job_id) for job_id in ids)
-            return Snapshot(jobs, self._read_meta(connection, 'revision'))
-
-    def failures_snapshot(self) -> Snapshot:
-        """Return every uncleared failure, oldest first, with the revision they were read at."""
-        with self._read() as connection:
-            rows = connection.execute('SELECT * FROM failures WHERE removed_at IS NULL ORDER BY seq')
-            failures = tuple(_failure_record(row) for row in rows)
-            return Snapshot(failures, self._read_meta(connection, 'revision'))
-
-    def job_view(self, job_id: str) -> JobView | None:
-        """Return a live job with its items and the view's revision, or None when unknown or removed."""
-        with self._read() as connection:
-            row = connection.execute(
-                'SELECT revision FROM jobs WHERE id = ? AND removed_at IS NULL', (job_id,),
-            ).fetchone()
-            if row is None:
-                return None
-            items = connection.execute('SELECT MAX(revision) FROM items WHERE job_id = ?', (job_id,)).fetchone()[0]
-            return JobView(self._job_record(connection, job_id), max(row['revision'], items or 0))
-
-    def changes(self, since: int, limit: int) -> ChangePage:
-        """Return the changes after ``since``: each changed record once, latest state, by revision.
-
-        A record that changes again while a caller pages moves to a later page, so following the
-        cursors until ``more`` is false yields the latest state of everything that changed (C38).
-
-        Args:
-            since: The cursor: the revision the caller has seen up to.
-            limit: The most entries to return; at least 1.
-
-        Raises:
-            CursorPruned: If ``since`` is below the pruned-through revision (decision C27).
-            ValueError: If ``limit`` is less than 1.
-        """
-        if limit < 1:
-            raise ValueError(f'limit must be at least 1, not {limit}')
-        with self._read() as connection:
-            pruned_through = self._read_meta(connection, 'pruned_through')
-            if since < pruned_through:
-                raise CursorPruned(pruned_through)
-            entries: list[Record] = []
-            for kind, table, convert in (
-                ('job', 'jobs', _job_fields), ('item', 'items', _item_record), ('failure', 'failures', _failure_record),
-            ):
-                rows = connection.execute(
-                    f'SELECT * FROM {table} WHERE revision > ? ORDER BY revision LIMIT ?', (since, limit + 1),
-                )
-                for row in rows:
-                    record = convert(row)
-                    entries.append({'kind': kind, 'id': row['id'], 'revision': row['revision'],
-                                    'removed': row['removed_at'] is not None, 'record': record})
-        entries.sort(key=_revision_of)
-        page = tuple(entries[:limit])
-        return ChangePage(page, _revision_of(page[-1]) if page else since, more=len(entries) > limit)
+        return [_failure_record(row) for row in self._connection.execute('SELECT * FROM failures ORDER BY seq')]
 
     @staticmethod
-    def _read_meta(connection: sqlite3.Connection, key: str) -> int:
-        """Read one counter from the meta table on the given connection."""
-        value: int = connection.execute('SELECT value FROM meta WHERE key = ?', (key,)).fetchone()[0]
-        return value
-
-    def _job_record(self, connection: sqlite3.Connection, job_id: str) -> Record:
-        """Build a job's representation with its items not removed."""
+    def _job_record(connection: sqlite3.Connection, job_id: str) -> Record:
+        """Build a job's representation with its items and uncleared failures (decision C39)."""
         row = connection.execute('SELECT * FROM jobs WHERE id = ?', (job_id,)).fetchone()
-        items = connection.execute(
-            'SELECT * FROM items WHERE job_id = ? AND removed_at IS NULL ORDER BY position', (job_id,),
-        )
-        return {**_job_fields(row), 'items': [_item_record(item) for item in items]}
+        kind = JobKind(row['kind'])
+        items = connection.execute('SELECT * FROM items WHERE job_id = ? ORDER BY position', (job_id,))
+        failures = connection.execute('SELECT * FROM failures WHERE job_id = ? ORDER BY seq', (job_id,))
+        return {
+            **_job_fields(row), 'items': [_item_record(item, kind) for item in items],
+            'failures': [_failure_record(failure) for failure in failures],
+        }
 
     # Worker writes
 
@@ -686,10 +471,10 @@ class Store:
         """
         with self._read() as connection:
             job = connection.execute(
-                "SELECT * FROM jobs AS j WHERE removed_at IS NULL AND state != 'finished' AND ("
+                "SELECT * FROM jobs AS j WHERE state != 'finished' AND ("
                 " (state = 'queued' AND target_type = 'playlist')"
                 " OR (state != 'expanding' AND EXISTS (SELECT 1 FROM items AS i"
-                "     WHERE i.job_id = j.id AND i.state = 'queued' AND i.removed_at IS NULL)))"
+                "     WHERE i.job_id = j.id AND i.state = 'queued')))"
                 ' ORDER BY seq <= ?, seq LIMIT 1',
                 (after_seq,),
             ).fetchone()
@@ -698,7 +483,7 @@ class Store:
             item = None
             if not (job['state'] == JobState.QUEUED and job['target_type'] == TargetType.PLAYLIST):
                 row = connection.execute(
-                    "SELECT id, video_id, title FROM items WHERE job_id = ? AND state = 'queued' AND removed_at IS NULL"
+                    "SELECT id, video_id, title FROM items WHERE job_id = ? AND state = 'queued'"
                     ' ORDER BY position LIMIT 1',
                     (job['id'],),
                 ).fetchone()
@@ -724,13 +509,12 @@ class Store:
         """
         with self._write() as connection:
             now = self._clock()
-            job = connection.execute('SELECT kind, target_id FROM jobs WHERE id = ?', (job_id,)).fetchone()
-            kind = JobKind(job['kind'])
+            job = connection.execute('SELECT target_id FROM jobs WHERE id = ?', (job_id,)).fetchone()
             for position, entry in enumerate(entries):
-                self._insert_item(connection, job_id, kind, position, entry, now)
+                self._insert_item(connection, job_id, position, entry, now)
             state = JobState.RUNNING if entries else JobState.FINISHED
             self._update_job(connection, job_id, state=state, playlist_title=playlist_title)
-            self._supersede(connection, "artifact = 'playlist' AND playlist_id = ?", (job['target_id'],), now)
+            self._supersede(connection, "artifact = 'playlist' AND playlist_id = ?", (job['target_id'],))
 
     def fail_expansion(self, job_id: str, failure: NewFailure) -> None:
         """Finish a playlist job whose expansion failed, recording the failure (DESIGN 5.7)."""
@@ -745,13 +529,6 @@ class Store:
             job_id = self._update_item(connection, item_id, now, state=ItemState.RUNNING)
             if self._job_state(connection, job_id) is JobState.QUEUED:
                 self._update_job(connection, job_id, state=JobState.RUNNING)
-
-    def record_progress(self, item_id: str, downloaded_bytes: int, total_bytes: int | None) -> None:
-        """Record a running item's download progress; throttling is the caller's job."""
-        with self._write() as connection:
-            self._update_item(
-                connection, item_id, self._clock(), downloaded_bytes=downloaded_bytes, total_bytes=total_bytes,
-            )
 
     def finish_item(self, item_id: str, result: ItemResult) -> None:
         """Record how an item ended, with its failures and their effects, in one transaction.
@@ -772,7 +549,7 @@ class Store:
                 title=result.title if result.title is not None else item['title'],
                 media_outcome=result.media_outcome, media_path=result.media_path,
                 captions_outcome=result.captions_outcome, captions_path=result.captions_path,
-                track_code=result.track_code, track_kind=result.track_kind, downloaded_bytes=None, total_bytes=None,
+                track_code=result.track_code, track_kind=result.track_kind,
             )
             for failure in result.failures:
                 self._insert_failure(connection, item['job_id'], item_id, failure)
@@ -783,160 +560,72 @@ class Store:
                 if definitive:
                     self._supersede(
                         connection, 'artifact = ? AND video_id = ? AND (item_id IS NULL OR item_id != ?)',
-                        (artifact, item['video_id'], item_id), now,
+                        (artifact, item['video_id'], item_id),
                     )
             unfinished = connection.execute(
-                "SELECT 1 FROM items WHERE job_id = ? AND state IN ('queued', 'running') AND removed_at IS NULL",
+                "SELECT 1 FROM items WHERE job_id = ? AND state IN ('queued', 'running')",
                 (item['job_id'],),
             ).fetchone()
             if unfinished is None:
                 self._update_job(connection, item['job_id'], state=JobState.FINISHED)
 
-    # Reconciliation writes
-
-    def finished_items(self) -> list[ItemFiles]:
-        """Return every done or failed item in the status table with its recorded files."""
-        rows = self._connection.execute(
-            "SELECT id, job_id, media_path, captions_path FROM items WHERE state IN ('done', 'failed')"
-            ' AND removed_at IS NULL ORDER BY job_id, position',
-        )
-        return [
-            ItemFiles(row['id'], row['job_id'], tuple(p for p in (row['media_path'], row['captions_path']) if p))
-            for row in rows
-        ]
-
-    def remove_items(self, item_ids: Sequence[str]) -> int:
-        """Remove done or failed items, leaving tombstones; others are left alone.
-
-        Returns:
-            How many items were removed.
-        """
-        removed = 0
-        with self._write() as connection:
-            now = self._clock()
-            for item_id in item_ids:
-                cursor = connection.execute(
-                    "UPDATE items SET removed_at = ?, updated_at = ?, revision = ? WHERE id = ?"
-                    " AND state IN ('done', 'failed') AND removed_at IS NULL",
-                    (now, now, self._next_revision(connection), item_id),
-                )
-                removed += cursor.rowcount
-        return removed
-
-    def remove_finished_jobs(self) -> int:
-        """Remove every finished job with no items left and no uncleared failure (decision C26).
-
-        Removing a job stores its final representation with its idempotency key, which then expires
-        ``KEY_RETENTION_SECONDS`` later (decisions C24 and C34).
-
-        Returns:
-            How many jobs were removed.
-        """
-        with self._write() as connection:
-            now = self._clock()
-            ids = [row['id'] for row in connection.execute(
-                "SELECT id FROM jobs AS j WHERE state = 'finished' AND removed_at IS NULL"
-                ' AND NOT EXISTS (SELECT 1 FROM items AS i WHERE i.job_id = j.id AND i.removed_at IS NULL)'
-                ' AND NOT EXISTS (SELECT 1 FROM failures AS f WHERE f.job_id = j.id AND f.removed_at IS NULL)'
-                ' ORDER BY seq',
-            )]
-            for job_id in ids:
-                connection.execute(
-                    'UPDATE jobs SET removed_at = ?, updated_at = ?, revision = ? WHERE id = ?',
-                    (now, now, self._next_revision(connection), job_id),
-                )
-                connection.execute(
-                    'UPDATE idempotency_keys SET final = ?, expires_at = ? WHERE job_id = ?',
-                    (json.dumps(self._job_record(connection, job_id)), now + KEY_RETENTION_SECONDS, job_id),
-                )
-            return len(ids)
-
     # Failures
 
     def clear_failures(self) -> list[Record]:
-        """Clear every uncleared failure and return the cleared records."""
+        """Delete every uncleared failure and return the cleared records, oldest first."""
         with self._write() as connection:
-            ids = [row['id'] for row in connection.execute(
-                'SELECT id FROM failures WHERE removed_at IS NULL ORDER BY seq',
-            )]
-            return [self._remove_failure(connection, failure_id, 'cleared', self._clock()) for failure_id in ids]
+            rows = connection.execute('SELECT * FROM failures ORDER BY seq').fetchall()
+            connection.execute('DELETE FROM failures')
+            return [_failure_record(row) for row in rows]
 
     def clear_failure(self, failure_id: str) -> Record | None:
-        """Clear one failure and return its record, or None when it is unknown or already cleared."""
+        """Delete one failure and return its record, or None when it is unknown or already cleared."""
         with self._write() as connection:
-            row = connection.execute(
-                'SELECT id FROM failures WHERE id = ? AND removed_at IS NULL', (failure_id,),
-            ).fetchone()
-            return None if row is None else self._remove_failure(connection, failure_id, 'cleared', self._clock())
+            row = connection.execute('DELETE FROM failures WHERE id = ? RETURNING *', (failure_id,)).fetchone()
+            return None if row is None else _failure_record(row)
 
     # Maintenance
-
-    def prune(self, retention_seconds: float) -> int:
-        """Delete tombstones older than the retention and expired idempotency keys.
-
-        The durable pruned-through revision rises to the highest revision deleted, so a change-feed
-        cursor below it is known to have missed something (decision C27).
-
-        Returns:
-            How many tombstones were deleted.
-        """
-        with self._write() as connection:
-            now = self._clock()
-            cutoff = now - retention_seconds
-            deleted = 0
-            highest = 0
-            for table in ('jobs', 'items', 'failures'):
-                rows = connection.execute(
-                    f'DELETE FROM {table} WHERE removed_at IS NOT NULL AND removed_at <= ? RETURNING revision',
-                    (cutoff,),
-                ).fetchall()
-                deleted += len(rows)
-                highest = max([highest, *(row[0] for row in rows)])
-            connection.execute(
-                "UPDATE meta SET value = MAX(value, ?) WHERE key = 'pruned_through'", (highest,),
-            )
-            connection.execute('DELETE FROM idempotency_keys WHERE expires_at <= ?', (now,))
-            return deleted
 
     def recover(self) -> None:
         """Requeue work interrupted by a restart (DESIGN 5.12).
 
         Running items return to queued, and jobs left expanding return to queued so they expand
-        again; each change takes a revision.
+        again.
         """
         with self._write() as connection:
             now = self._clock()
             for row in connection.execute("SELECT id FROM items WHERE state = 'running' ORDER BY rowid").fetchall():
-                self._update_item(
-                    connection, row['id'], now, state=ItemState.QUEUED, downloaded_bytes=None, total_bytes=None,
-                )
+                self._update_item(connection, row['id'], now, state=ItemState.QUEUED)
             for row in connection.execute("SELECT id FROM jobs WHERE state = 'expanding' ORDER BY seq").fetchall():
                 self._update_job(connection, row['id'], state=JobState.QUEUED)
 
     # Row helpers
 
     def _update_job(self, connection: sqlite3.Connection, job_id: str, **fields: object) -> None:
-        """Set job columns and take a revision."""
-        self._update(connection, 'jobs', 'id', job_id, self._clock(), fields)
+        """Set job columns, stamping ``finished_at`` when the job finishes, which starts its retention."""
+        now = self._clock()
+        if fields.get('state') is JobState.FINISHED:
+            fields['finished_at'] = now
+        self._update(connection, 'jobs', 'id', job_id, now, fields)
 
     def _update_item(self, connection: sqlite3.Connection, item_id: str, now: float, **fields: object) -> str:
-        """Set item columns, take a revision and return the item's job ID."""
+        """Set item columns and return the item's job ID."""
         self._update(connection, 'items', 'id', item_id, now, fields)
         job_id: str = connection.execute('SELECT job_id FROM items WHERE id = ?', (item_id,)).fetchone()[0]
         return job_id
 
+    @staticmethod
     def _update(
-        self, connection: sqlite3.Connection, table: str, key: str, value: str, now: float, fields: dict[str, object],
+        connection: sqlite3.Connection, table: str, key: str, value: str, now: float, fields: dict[str, object],
     ) -> None:
-        """Set columns of one row by key, stamping ``updated_at`` and the next revision.
+        """Set columns of one row by key, stamping ``updated_at``.
 
         Raises:
             LookupError: If no row has that key.
         """
         assignments = ', '.join(f'{column} = ?' for column in fields)
         cursor = connection.execute(
-            f'UPDATE {table} SET {assignments}, updated_at = ?, revision = ? WHERE {key} = ?',
-            (*fields.values(), now, self._next_revision(connection), value),
+            f'UPDATE {table} SET {assignments}, updated_at = ? WHERE {key} = ?', (*fields.values(), now, value),
         )
         if cursor.rowcount != 1:
             raise LookupError(f'No {table} row with {key} {value!r}')
@@ -949,7 +638,7 @@ class Store:
     def _insert_failure(
         self, connection: sqlite3.Connection, job_id: str, item_id: str | None, failure: NewFailure,
     ) -> None:
-        """Insert a failure with its job's and item's context and the next revision."""
+        """Insert a failure with its job's and item's context."""
         now = self._clock()
         job = connection.execute(
             'SELECT kind, url, target_type, target_id, playlist_title FROM jobs WHERE id = ?', (job_id,),
@@ -961,31 +650,16 @@ class Store:
         playlist = job['target_type'] == TargetType.PLAYLIST
         connection.execute(
             'INSERT INTO failures (id, job_id, job_kind, item_id, url, video_id, playlist_id, playlist_title, phase,'
-            ' artifact, category, message, created_at, updated_at, revision)'
-            ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            ' artifact, category, message, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
             (uuid.uuid4().hex, job_id, kind, item_id, job['url'], video_id,
              job['target_id'] if playlist else None, job['playlist_title'] if playlist else None,
-             failure.phase, _artifact_of(failure.phase, kind), failure.category, failure.message, now, now,
-             self._next_revision(connection)),
+             failure.phase, _artifact_of(failure.phase, kind), failure.category, failure.message, now),
         )
 
-    def _supersede(
-        self, connection: sqlite3.Connection, condition: str, parameters: tuple[object, ...], now: float,
-    ) -> None:
-        """Remove uncleared failures matching ``condition`` as superseded."""
-        ids = [row['id'] for row in connection.execute(
-            f'SELECT id FROM failures WHERE removed_at IS NULL AND {condition} ORDER BY seq', parameters,
-        )]
-        for failure_id in ids:
-            self._remove_failure(connection, failure_id, 'superseded', now)
-
-    def _remove_failure(self, connection: sqlite3.Connection, failure_id: str, removal: str, now: float) -> Record:
-        """Turn a failure into a tombstone with the next revision and return its final record."""
-        connection.execute(
-            'UPDATE failures SET removed_at = ?, removal = ?, updated_at = ?, revision = ? WHERE id = ?',
-            (now, removal, now, self._next_revision(connection), failure_id),
-        )
-        return _failure_record(connection.execute('SELECT * FROM failures WHERE id = ?', (failure_id,)).fetchone())
+    @staticmethod
+    def _supersede(connection: sqlite3.Connection, condition: str, parameters: tuple[object, ...]) -> None:
+        """Delete the uncleared failures matching ``condition``: a later attempt settled them (DESIGN 5.9)."""
+        connection.execute(f'DELETE FROM failures WHERE {condition}', parameters)
 
 
 def _artifact_of(phase: Phase, kind: JobKind) -> _Artifact:
@@ -1017,19 +691,11 @@ def _job_fields(row: sqlite3.Row) -> Record:
         'playlist_title': row['playlist_title'],
         'created_at': _iso(row['created_at']),
         'updated_at': _iso(row['updated_at']),
-        'revision': row['revision'],
-        'removed': row['removed_at'] is not None,
     }
 
 
-def _item_record(row: sqlite3.Row) -> Record:
-    """Return an item's representation; only the artifacts its job requests appear."""
-    kind = JobKind(row['job_kind'])
-    downloaded, total = row['downloaded_bytes'], row['total_bytes']
-    progress = None
-    if downloaded is not None:
-        percent = None if not total else round(100.0 * downloaded / total, 1)
-        progress = {'downloaded_bytes': downloaded, 'total_bytes': total, 'percent': percent}
+def _item_record(row: sqlite3.Row, kind: JobKind) -> Record:
+    """Return an item's representation; only the artifacts its job's ``kind`` requests appear."""
     record: Record = {
         'id': row['id'],
         'job_id': row['job_id'],
@@ -1037,20 +703,18 @@ def _item_record(row: sqlite3.Row) -> Record:
         'video_id': row['video_id'],
         'title': row['title'],
         'state': row['state'],
-        'progress': progress,
     }
     if kind.wants_media:
         record['media'] = {'outcome': row['media_outcome'], 'path': row['media_path']}
     if kind.wants_captions:
         track = None if row['track_code'] is None else {'code': row['track_code'], 'kind': row['track_kind']}
         record['captions'] = {'outcome': row['captions_outcome'], 'path': row['captions_path'], 'track': track}
-    record.update(created_at=_iso(row['created_at']), updated_at=_iso(row['updated_at']), revision=row['revision'],
-                  removed=row['removed_at'] is not None)
+    record.update(created_at=_iso(row['created_at']), updated_at=_iso(row['updated_at']))
     return record
 
 
 def _failure_record(row: sqlite3.Row) -> Record:
-    """Return a failure's representation; ``removal`` says whether it was cleared or superseded."""
+    """Return a failure's representation."""
     return {
         'id': row['id'],
         'created_at': _iso(row['created_at']),
@@ -1064,14 +728,4 @@ def _failure_record(row: sqlite3.Row) -> Record:
         'phase': row['phase'],
         'category': row['category'],
         'message': row['message'],
-        'revision': row['revision'],
-        'removed': row['removed_at'] is not None,
-        'removal': row['removal'],
     }
-
-
-def _revision_of(entry: Record) -> int:
-    """Return a change entry's revision."""
-    revision = entry['revision']
-    assert isinstance(revision, int)  # set from an INTEGER column by Store.changes
-    return revision

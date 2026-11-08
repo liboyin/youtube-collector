@@ -1,10 +1,11 @@
-"""The YouTube worker thread: round-robin scheduling and item processing (DESIGN 5.3, 5.4, 5.7, 5.12, 5.13).
+"""The YouTube worker thread: round-robin scheduling and item processing (DESIGN 5.3, 5.4, 5.7, 5.12-5.14).
 
 All YouTube traffic runs on this one thread, one request at a time. The worker takes the next unit
 of work in round-robin order (decision C9), expands playlists, checks each artifact with the
 ``NEVER`` policy before any network work, downloads, publishes through a stage directory, and
 records the item's outcome with its failures in one store write. It pauses without changing any
-record while the staging marker is missing.
+record while the staging marker is missing. It is the only thread that touches the staging share,
+and the latest marker check it made is what ``/health`` reports (decisions C25 and C43).
 """
 
 import enum
@@ -35,9 +36,9 @@ from youtube_collector.store import (
     WorkUnit,
 )
 from youtube_collector.urls import PlaylistTarget, VideoTarget
-from youtube_collector.youtube import Playlist, ProgressCallback, VideoInfo
+from youtube_collector.youtube import ActivityCallback, Playlist, VideoInfo
 
-__all__ = ['CaptionSource', 'MediaSource', 'StagingUnavailable', 'Step', 'Track', 'Worker']
+__all__ = ['CaptionSource', 'MediaSource', 'StagingCheck', 'StagingUnavailable', 'Step', 'Track', 'Worker']
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,7 @@ class MediaSource(Protocol):
         """Extract a video's metadata."""
         ...
 
-    def download_media(self, video: VideoInfo, path: Path, on_progress: ProgressCallback) -> None:
+    def download_media(self, video: VideoInfo, path: Path, on_activity: ActivityCallback) -> None:
         """Download a video as MP4 to ``path``."""
         ...
 
@@ -86,6 +87,19 @@ class CaptionSource[T: Track](Protocol):
     def fetch_srt(self, track: T) -> str:
         """Fetch a track as SRT."""
         ...
+
+
+@dataclass(frozen=True)
+class StagingCheck:
+    """The most recent check of the staging marker, for ``/health`` (DESIGN 5.14).
+
+    Attributes:
+        marker_present: Whether the marker was present, and so whether work may proceed.
+        checked_at: When the check finished, on the worker's monotonic clock.
+    """
+
+    marker_present: bool
+    checked_at: float
 
 
 class StagingUnavailable(OSError):
@@ -140,9 +154,8 @@ class Worker[T: Track]:
         staging_root: The staging area's root directory.
         media: The yt-dlp adapter.
         captions: The caption adapter.
-        notify: Wakes long-poll waiters after each store write; must be safe to call from this thread.
-        monotonic: A monotonic clock in seconds, for progress throttling.
-        progress_interval: The minimum seconds between progress writes for one item (DESIGN 5.10).
+        monotonic: A monotonic clock in seconds, for the age of the staging check.
+        marker_check_interval: The minimum seconds between marker checks during a download (decision C43).
         idle_wait: How long to wait for a wake-up when there is no work.
         pause_wait: How long to wait before checking the staging marker again while paused.
         error_wait: How long to wait after an unexpected error before trying again.
@@ -150,7 +163,7 @@ class Worker[T: Track]:
 
     def __init__(
         self, *, open_store: Callable[[], Store], staging_root: Path, media: MediaSource, captions: CaptionSource[T],
-        notify: Callable[[], None], monotonic: Callable[[], float], progress_interval: float = 1.0,
+        monotonic: Callable[[], float], marker_check_interval: float = 30.0,
         idle_wait: float = 30.0, pause_wait: float = 5.0, error_wait: float = 5.0,
     ) -> None:
         """Store the collaborators; nothing runs until ``run``."""
@@ -158,14 +171,14 @@ class Worker[T: Track]:
         self._root = staging_root
         self._media = media
         self._captions = captions
-        self._notify = notify
         self._monotonic = monotonic
-        self._progress_interval = progress_interval
+        self._marker_check_interval = marker_check_interval
         self._idle_wait = idle_wait
         self._pause_wait = pause_wait
         self._error_wait = error_wait
         self._cursor = 0
         self._paused = False
+        self._staging_check: StagingCheck | None = None
         self._stopping = threading.Event()
         self._wakeup = threading.Event()
 
@@ -173,6 +186,10 @@ class Worker[T: Track]:
     def paused(self) -> bool:
         """Whether the worker found the staging marker missing at its last check."""
         return self._paused
+
+    def staging_check(self) -> StagingCheck | None:
+        """Return the latest marker check, or None before the first; safe from any thread (decision C43)."""
+        return self._staging_check
 
     def wake(self) -> None:
         """Wake the worker early, for example after a submission; safe from any thread."""
@@ -191,7 +208,6 @@ class Worker[T: Track]:
         """
         with self._open_store() as store:
             store.recover()
-            self._notify()
             while not self._stopping.is_set():
                 try:
                     step = self.step(store)
@@ -214,7 +230,7 @@ class Worker[T: Track]:
 
         Nothing starts while the staging marker is missing, and no record changes (DESIGN 5.13).
         """
-        if not staging.marker_present(self._root):
+        if not self._check_marker():
             if not self._paused:
                 logger.warning('Staging marker %s is missing; pausing work', self._root / staging.MARKER_NAME)
                 self._paused = True
@@ -235,7 +251,6 @@ class Worker[T: Track]:
     def _expand(self, store: Store, unit: WorkUnit) -> None:
         """Expand a playlist job into items, or finish it with a failure (DESIGN 5.3, 5.7)."""
         store.start_expansion(unit.job_id)
-        self._notify()
         try:
             playlist = self._media.expand_playlist(PlaylistTarget(unit.target_id).url)
         except Exception as error:
@@ -244,15 +259,13 @@ class Worker[T: Track]:
         else:
             entries = [PlaylistEntry(video.video_id, video.title) for video in playlist.entries]
             store.complete_expansion(unit.job_id, playlist.title, entries)
-        self._notify()
 
     def _process(self, store: Store, unit: WorkUnit, item: WorkItem) -> None:
         """Process one item and record its result with its failures in one write."""
         store.start_item(item.id)
-        self._notify()
         outcome = _Outcome(title=item.title)
         try:
-            self._run_item(store, unit, item, outcome)
+            self._run_item(unit, item, outcome)
         except _ItemFailed as failed:
             logger.warning('Item %s (%s) failed: %s', item.id, item.video_id, failed.failure.message)
             outcome.failures.append(failed.failure)
@@ -260,9 +273,8 @@ class Worker[T: Track]:
         else:
             state = ItemState.DONE
         store.finish_item(item.id, outcome.result(state))
-        self._notify()
 
-    def _run_item(self, store: Store, unit: WorkUnit, item: WorkItem, outcome: _Outcome) -> None:
+    def _run_item(self, unit: WorkUnit, item: WorkItem, outcome: _Outcome) -> None:
         """Produce an item's artifacts into ``outcome``, raising ``_ItemFailed`` when the item fails.
 
         Each artifact is checked with ``NEVER`` before any network work (DESIGN 5.4). Media comes
@@ -298,7 +310,7 @@ class Worker[T: Track]:
             outcome.title = video.title
         if need_media:
             assert video is not None  # extracted above whenever media is needed
-            media = [self._download_media(store, item, directory, video, outcome)]
+            media = [self._download_media(item, directory, video, outcome)]
         if need_captions:
             self._fetch_captions(unit, item, directory, media, outcome)
 
@@ -312,15 +324,13 @@ class Worker[T: Track]:
             return self._root
         return self._root / staging.playlist_dir_name(unit.playlist_title or unit.target_id, unit.target_id)
 
-    def _download_media(
-        self, store: Store, item: WorkItem, directory: Path, video: VideoInfo, outcome: _Outcome,
-    ) -> Path:
+    def _download_media(self, item: WorkItem, directory: Path, video: VideoInfo, outcome: _Outcome) -> Path:
         """Download and publish the MP4, recording its outcome; return its path."""
         try:
             target = directory / staging.media_name(outcome.title or '', item.video_id)
 
             def write(path: Path) -> None:
-                self._media.download_media(video, path, self._progress(store, item.id))
+                self._media.download_media(video, path, self._marker_heartbeat())
                 self._require_marker()
 
             published = staging.publish(target, write)
@@ -377,20 +387,25 @@ class Worker[T: Track]:
         Raises:
             StagingUnavailable: If the marker is missing.
         """
-        if not staging.marker_present(self._root):
+        if not self._check_marker():
             raise StagingUnavailable(f'Staging marker {self._root / staging.MARKER_NAME} is missing')
 
-    def _progress(self, store: Store, item_id: str) -> ProgressCallback:
-        """Return a progress callback that writes at most once per ``progress_interval`` (DESIGN 5.10)."""
-        last: float | None = None
+    def _check_marker(self) -> bool:
+        """Check the staging marker, record the result for ``/health`` and return it."""
+        present = staging.marker_present(self._root)
+        self._staging_check = StagingCheck(present, self._monotonic())
+        return present
 
-        def report(downloaded: int, total: int | None) -> None:
-            nonlocal last
-            now = self._monotonic()
-            if last is not None and now - last < self._progress_interval:
-                return
-            last = now
-            store.record_progress(item_id, downloaded, total)
-            self._notify()
+    def _marker_heartbeat(self) -> ActivityCallback:
+        """Return a download callback that repeats the marker check once per ``marker_check_interval``.
 
-        return report
+        A download can outlast the age at which ``/health`` calls a check stale, while the share is
+        healthy (decision C43). The result only informs ``/health``: publication checks again.
+        """
+
+        def beat() -> None:
+            check = self._staging_check
+            if check is None or self._monotonic() - check.checked_at >= self._marker_check_interval:
+                self._check_marker()
+
+        return beat

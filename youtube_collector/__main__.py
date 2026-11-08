@@ -1,9 +1,9 @@
 """Run the service: ``python3 -m youtube_collector`` (DESIGN section 7).
 
-One uvicorn process serves the API and runs the worker and reconciliation threads; it must never
-run several server processes, because long-poll wake-ups are in-process. Settings come from the
+One uvicorn process serves the API and runs the worker thread; it must never
+run several server processes, because the worker and its cached staging check are in-process. Settings come from the
 environment (``config.Settings``). On SIGTERM uvicorn stops serving, and the application's lifespan
-stops the threads within the shutdown grace (decision C36).
+stops the thread within the shutdown grace (decision C36).
 """
 
 import logging
@@ -17,7 +17,7 @@ from youtube_collector.config import Settings
 
 __all__ = ['main']
 
-# How long uvicorn lets open requests, such as long polls, finish after SIGTERM before the
+# How long uvicorn lets open requests finish after SIGTERM before the
 # application's own shutdown begins.
 REQUEST_SHUTDOWN_SECONDS = 5
 

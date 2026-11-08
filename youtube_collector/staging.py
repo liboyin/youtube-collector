@@ -1,7 +1,7 @@
 """The staging area's layout: names, the root marker, existing artifacts and atomic publication.
 
-DESIGN 5.4 owns names and publication, and 5.13 owns the marker. The worker and the reconciliation
-thread are the only callers: API request handlers never touch the staging share (decision C25).
+DESIGN 5.4 owns names and publication, and 5.13 owns the marker. The worker is the only caller: API
+request handlers never touch the staging share (decision C25).
 """
 
 import stat

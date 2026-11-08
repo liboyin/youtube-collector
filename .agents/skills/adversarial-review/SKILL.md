@@ -49,7 +49,7 @@ Add undocumented constraints, accepted findings not to re-raise, or other eviden
 
 ### 3. Investigate and report — reviewer
 
-Read current AGENTS, the complete requested diff, in-scope untracked files and relevant source, tests, docs and configuration. Never read ignored untracked content. Actively try to falsify the change with boundary/failure cases, state transitions and tests that can pass for the wrong reason. Scrutinize SQLite transactions and revision ordering, the worker thread's handoff to the event loop, long-poll wake-ups, restart recovery, reconciliation deletes and the staging marker, atomic publication, resource and concurrency ownership, paths, and yt-dlp and caption failure handling where relevant. Assess correctness, preserved behavior, simplicity, design, documentation and testability; do not manufacture findings, treat taste as a defect or inflate severity.
+Read current AGENTS, the complete requested diff, in-scope untracked files and relevant source, tests, docs and configuration. Never read ignored untracked content. Actively try to falsify the change with boundary/failure cases, state transitions and tests that can pass for the wrong reason. Scrutinize SQLite transactions, retention deletes, the API's isolation from the worker thread, restart recovery and the staging marker, atomic publication, resource and concurrency ownership, paths, and yt-dlp and caption failure handling where relevant. Assess correctness, preserved behavior, simplicity, design, documentation and testability; do not manufacture findings, treat taste as a defect or inflate severity.
 
 Classify each evidenced finding by impact, likelihood, requirements and deferral risk:
 

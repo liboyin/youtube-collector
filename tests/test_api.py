@@ -1,7 +1,7 @@
 """Tests for the HTTP API and the service's composition (DESIGN 5.1, 5.8-5.10, 5.14, section 6).
 
-The real lifespan runs, with the worker and reconciliation threads, against a test-owned staging
-directory and database and fake adapters, so nothing reaches YouTube.
+The real lifespan runs, with the worker thread, against a test-owned staging directory and database
+and fake adapters, so nothing reaches YouTube.
 """
 
 import sqlite3
@@ -49,9 +49,9 @@ class FakeMedia:
         video_id = url.rsplit('=', 1)[1]
         return VideoInfo(video_id, self.titles[video_id], {'id': video_id})
 
-    def download_media(self, video, path, on_progress):
+    def download_media(self, video, path, on_activity):
         """Write fake media, or raise the configured error."""
-        on_progress(1, 2)
+        on_activity()
         if self.download_error is not None:
             raise self.download_error
         path.write_bytes(b'media')
@@ -106,8 +106,8 @@ def monotonic():
 def settings(tmp_path, staging_root):
     """Provide settings whose every path is test-owned."""
     return Settings(
-        staging_dir=staging_root, database=tmp_path / 'db.sqlite3', reconcile_interval=3600, max_wait=5,
-        tombstone_retention=3600, jobs_reconcile_wait=5, staging_health_max_age=60, shutdown_grace=10,
+        staging_dir=staging_root, database=tmp_path / 'db.sqlite3', job_retention=3600, staging_health_max_age=60,
+        shutdown_grace=10,
     )
 
 
@@ -124,16 +124,31 @@ def client(settings, media, monotonic):
         yield running
 
 
+def wait_for(condition):
+    """Wait for a condition set by the worker thread, failing the test after a bound."""
+    deadline = time.monotonic() + 10
+    while not condition():
+        assert time.monotonic() < deadline, 'condition was not reached'
+        time.sleep(0.005)
+
+
 def wait_until_finished(client, job):
-    """Long-poll a job until it is finished, and return it."""
-    view = client.get(f'/jobs/{job["id"]}').json()
-    for _ in range(50):
-        if view['state'] == 'finished':
-            return view
-        response = client.get(f'/jobs/{job["id"]}', params={'since': view['view_revision'], 'wait': 5})
+    """Poll a job until it is finished, and return it."""
+    seen = {}
+
+    def finished():
+        response = client.get(f'/jobs/{job["id"]}')
         assert response.status_code == 200
-        view = response.json()
-    raise AssertionError(f'job did not finish: {view}')
+        seen.update(response.json())
+        return seen['state'] == 'finished'
+
+    wait_for(finished)
+    return seen
+
+
+def wait_for_staging_check(client):
+    """Wait for the worker's first marker check."""
+    wait_for(lambda: client.app.state.runtime.worker.staging_check() is not None)
 
 
 def test_default_components_detect_cookies_once_and_build_the_real_adapters(settings):
@@ -146,16 +161,22 @@ def test_default_components_detect_cookies_once_and_build_the_real_adapters(sett
     assert isinstance(components.captions, testee.CaptionClient)
 
 
-def test_submit_videos_returns_202_and_the_worker_downloads(client, staging_root):
-    """A submission is accepted at once and wakes the worker, which then publishes the file (DESIGN 5.1)."""
-    client.get('/jobs')  # the worker has started and gone idle, waiting up to 30 s for work
-    started = time.monotonic()
-    response = client.post('/jobs/videos', json={'url': VIDEO_URL})
-    assert response.status_code == 202
-    job = response.json()
-    assert (job['kind'], job['state'], job['target']) == ('videos', 'queued', {'type': 'video', 'id': VIDEO})
-    finished = wait_until_finished(client, job)
-    assert time.monotonic() - started < 10  # woken by the submission, not by the worker's idle timeout
+def test_submit_videos_returns_202_and_wakes_the_worker(settings, media, monotonic, staging_root):
+    """A submission is accepted at once and wakes the idle worker, which then publishes the file (DESIGN 5.1)."""
+    idle = threading.Event()
+    real_wait = testee.Worker._wait
+
+    def wait(worker, timeout):
+        idle.set()
+        real_wait(worker, timeout)
+
+    with patch.object(testee.Worker, '_wait', wait), make_client(settings, media, monotonic) as client:
+        assert idle.wait(10)  # the worker now waits up to 30 s for work, far longer than wait_for's bound
+        response = client.post('/jobs/videos', json={'url': VIDEO_URL})
+        assert response.status_code == 202
+        job = response.json()
+        assert (job['kind'], job['state'], job['target']) == ('videos', 'queued', {'type': 'video', 'id': VIDEO})
+        finished = wait_until_finished(client, job)
     assert finished['items'][0]['media'] == {'outcome': 'downloaded', 'path': f'{VIDEO} - A video.mp4'}
     assert (staging_root / f'{VIDEO} - A video.mp4').read_bytes() == b'media'
 
@@ -185,7 +206,7 @@ def test_submit_captions_expands_playlists(client, staging_root):
     ('/jobs/captions', {'url': VIDEO_URL}, 'Field required'),
     ('/jobs/captions', {'url': VIDEO_URL, 'languages': []}, 'at least 1'),
     ('/jobs/videos-with-captions', {'url': VIDEO_URL, 'languages': ['en', 'en_US']}, 'BCP 47'),
-    ('/jobs/videos', {'url': VIDEO_URL, 'idempotency_key': ''}, 'at least 1'),
+    ('/jobs/videos', {'url': VIDEO_URL, 'idempotency_key': 'k'}, 'Extra inputs'),
 ])
 def test_invalid_submissions_return_422(client, path, body, message):
     """Malformed bodies, unsupported URLs, channels and bad language tags are rejected (DESIGN 5.1)."""
@@ -195,146 +216,110 @@ def test_invalid_submissions_return_422(client, path, body, message):
     assert client.get('/jobs').json()['jobs'] == []
 
 
-def test_idempotency_key_replays_and_conflicts(client):
-    """The same key and body return the job with 200; another body is 409 (DESIGN 5.1)."""
-    body = {'url': VIDEO_URL, 'languages': ['en'], 'idempotency_key': 'k1'}
-    first = client.post('/jobs/captions', json=body)
-    again = client.post('/jobs/captions', json=body)
-    assert (first.status_code, again.status_code) == (202, 200)
-    assert again.json()['id'] == first.json()['id']
-    other = client.post('/jobs/captions', json={**body, 'languages': ['de']})
-    assert other.status_code == 409
-    endpoint = client.post('/jobs/videos-with-captions', json=body)
-    assert endpoint.status_code == 409  # the kind is part of the body
+def test_a_repeated_submission_is_a_new_job_that_finds_the_files(client):
+    """Without idempotency keys a repeat is a second 202, and its job reports the file as existing (C46)."""
+    body = {'url': VIDEO_URL}
+    first = client.post('/jobs/videos', json=body)
+    wait_until_finished(client, first.json())
+    second = client.post('/jobs/videos', json=body)
+    assert (first.status_code, second.status_code) == (202, 202)
+    assert second.json()['id'] != first.json()['id']
+    assert wait_until_finished(client, second.json())['items'][0]['media']['outcome'] == 'existing'
 
 
-def test_idempotency_key_replays_the_final_representation_after_removal(client, staging_root):
-    """Once the job left the status table, its key still returns its final state with 200 (C34)."""
-    body = {'url': VIDEO_URL, 'idempotency_key': 'k2'}
-    job = client.post('/jobs/videos', json=body).json()
-    wait_until_finished(client, job)
+def test_list_jobs_returns_every_retained_job(client):
+    """GET /jobs is the status table and nothing else (DESIGN 5.8)."""
+    job = client.post('/jobs/videos', json={'url': VIDEO_URL}).json()
+    finished = wait_until_finished(client, job)
+    assert client.get('/jobs').json() == {'jobs': [finished]}
+
+
+def test_a_finished_job_stays_readable_after_its_file_is_moved(client, staging_root):
+    """Records do not follow the files: moving a file changes nothing (C40)."""
+    job = client.post('/jobs/videos', json={'url': VIDEO_URL}).json()
+    finished = wait_until_finished(client, job)
     (staging_root / f'{VIDEO} - A video.mp4').unlink()
-    assert client.get('/jobs').json()['jobs'] == []
-    replay = client.post('/jobs/videos', json=body)
-    assert replay.status_code == 200
-    assert (replay.json()['id'], replay.json()['removed']) == (job['id'], True)
+    assert client.get(f'/jobs/{job["id"]}').json() == finished
+    assert [listed['id'] for listed in client.get('/jobs').json()['jobs']] == [job['id']]
 
 
-def test_list_jobs_reconciles_and_reports_revision_and_time(client, staging_root):
-    """GET /jobs requests a pass, so moved files drop out, and reports its snapshot revision (5.8, C38)."""
+def test_a_new_submission_deletes_jobs_past_the_retention(settings, media, monotonic):
+    """The configured retention reaches the store: an expired job is 404 after the next submission (C42)."""
+    settings = Settings(**{**settings.__dict__, 'job_retention': 0})
+    with make_client(settings, media, monotonic) as client:
+        job = client.post('/jobs/videos', json={'url': VIDEO_URL}).json()
+        wait_until_finished(client, job)
+        assert client.get(f'/jobs/{job["id"]}').status_code == 200
+        client.post('/jobs/videos', json={'url': f'https://youtu.be/{OTHER}'})
+        assert client.get(f'/jobs/{job["id"]}').status_code == 404
+
+
+def test_a_job_within_the_retention_survives_a_new_submission(client):
+    """The configured retention is honored in the other direction too."""
     job = client.post('/jobs/videos', json={'url': VIDEO_URL}).json()
     wait_until_finished(client, job)
-    listed = client.get('/jobs').json()
-    assert [j['id'] for j in listed['jobs']] == [job['id']]
-    assert listed['reconciled_at'] is not None
-    assert listed['revision'] >= listed['jobs'][0]['revision']
-    (staging_root / f'{VIDEO} - A video.mp4').unlink()
-    assert client.get('/jobs').json()['jobs'] == []
+    client.post('/jobs/videos', json={'url': f'https://youtu.be/{OTHER}'})
+    assert client.get(f'/jobs/{job["id"]}').status_code == 200
 
 
 def test_get_job_returns_404_for_unknown_jobs(client):
     """An unknown job is 404."""
     assert client.get('/jobs/missing').status_code == 404
-    assert client.get('/jobs/missing', params={'since': 0, 'wait': 0}).status_code == 404
 
 
-def test_get_job_with_since_returns_when_nothing_changes_before_the_wait(client, settings):
-    """A long poll on an unchanged job returns its current state after the (capped) wait."""
+def test_the_change_feed_route_is_gone(client):
+    """/jobs/changes is no longer a route: it reads as a job with that ID (C39)."""
+    response = client.get('/jobs/changes', params={'since': 0, 'wait': 0})
+    assert response.status_code == 404
+    assert response.json()['detail'] == 'Unknown job changes'
+
+
+def test_get_job_ignores_long_poll_parameters_and_returns_at_once(client):
+    """There is no long polling: the old parameters change nothing (C41)."""
     job = client.post('/jobs/videos', json={'url': VIDEO_URL}).json()
     finished = wait_until_finished(client, job)
-    same = client.get(f'/jobs/{job["id"]}', params={'since': finished['view_revision'], 'wait': 0})
-    assert same.json()['view_revision'] == finished['view_revision']
+    assert client.get(f'/jobs/{job["id"]}', params={'since': 10 ** 9, 'wait': 60}).json() == finished
 
 
-def test_change_feed_pages_and_waits_for_changes(client):
-    """The feed lists changes after the cursor and waits for the next one (DESIGN 5.10)."""
-    first = client.get('/jobs/changes').json()
-    assert (first['changes'], first['cursor'], first['more']) == ([], 0, False)
-    job = client.post('/jobs/videos', json={'url': VIDEO_URL}).json()
-    wait_until_finished(client, job)
-    page = client.get('/jobs/changes', params={'since': 0, 'limit': 1}).json()
-    assert (len(page['changes']), page['more']) == (1, True)
-    rest = client.get('/jobs/changes', params={'since': page['cursor'], 'limit': 1000}).json()
-    kinds = {(entry['kind'], entry['id']) for entry in page['changes'] + rest['changes']}
-    assert ('job', job['id']) in kinds
-    assert ('item', job['items'][0]['id']) in kinds
-    second = client.post('/jobs/videos', json={'url': f'https://youtu.be/{OTHER}'}).json()
-    waited = client.get('/jobs/changes', params={'since': rest['cursor'], 'wait': 5}).json()
-    assert second['id'] in {entry['id'] for entry in waited['changes']}
-
-
-def test_change_feed_caps_wait_and_validates_parameters(client):
-    """The wait is capped by the settings, and out-of-range parameters are 422."""
-    cursor = client.get('/jobs/changes').json()['cursor']
-    assert client.get('/jobs/changes', params={'since': cursor, 'wait': 0.01}).json()['changes'] == []
-    assert client.get('/jobs/changes', params={'limit': 1001}).status_code == 422
-    assert client.get('/jobs/changes', params={'since': -1}).status_code == 422
-    assert client.get('/jobs/changes', params={'wait': -1}).status_code == 422
-
-
-def test_change_feed_and_job_waits_are_capped(settings, media, monotonic):
-    """A wait above COLLECTOR_MAX_WAIT is cut to it, so idle polls cannot outlast proxies (DESIGN 5.10)."""
-    settings = Settings(**{**settings.__dict__, 'max_wait': 0.2})
-    with make_client(settings, media, monotonic) as client:
-        job = client.post('/jobs/videos', json={'url': VIDEO_URL}).json()
-        finished = wait_until_finished(client, job)
-        cursor = client.get('/jobs/changes', params={'since': 0, 'limit': 1000}).json()['cursor']
-        for path, params in (('/jobs/changes', {'since': cursor}), (f'/jobs/{job["id"]}',
-                                                                     {'since': finished['view_revision']})):
-            started = time.monotonic()
-            assert client.get(path, params={**params, 'wait': 3}).status_code == 200
-            assert time.monotonic() - started < 2
-
-
-def test_change_feed_returns_410_below_the_pruned_revision(settings, media, monotonic, staging_root):
-    """A cursor older than pruned tombstones gets 410, telling the caller to resynchronize (C27)."""
-    settings = Settings(**{**settings.__dict__, 'tombstone_retention': 0})
-    with make_client(settings, media, monotonic) as client:
-        job = client.post('/jobs/videos', json={'url': VIDEO_URL}).json()
-        wait_until_finished(client, job)
-        (staging_root / f'{VIDEO} - A video.mp4').unlink()
-        client.get('/jobs')  # removes the item and job, then prunes their tombstones at once
-        client.get('/jobs')
-        response = client.get('/jobs/changes', params={'since': 0})
-        assert response.status_code == 410
-        assert 'resynchronize' in response.json()['detail']
-
-
-def test_failures_are_listed_and_cleared(client, media):
-    """Failures appear with their reason and can be cleared one by one or all at once (DESIGN 5.9)."""
+def test_failures_are_listed_embedded_and_cleared(client, media):
+    """Failures appear with their reason, in their job too, and clear one by one or at once (DESIGN 5.9)."""
     media.download_error = RuntimeError("ERROR: Sign in to confirm you're not a bot")
-    for url in (VIDEO_URL, f'https://youtu.be/{OTHER}'):
-        wait_until_finished(client, client.post('/jobs/videos', json={'url': url}).json())
+    jobs = [client.post('/jobs/videos', json={'url': url}).json() for url in (VIDEO_URL, f'https://youtu.be/{OTHER}')]
+    finished = [wait_until_finished(client, job) for job in jobs]
     listed = client.get('/failures').json()
+    assert set(listed) == {'failures'}
     assert [f['category'] for f in listed['failures']] == ['blocked', 'blocked']
-    assert listed['revision'] >= max(f['revision'] for f in listed['failures'])
+    assert [job['failures'] for job in finished] == [[listed['failures'][0]], [listed['failures'][1]]]
     first = listed['failures'][0]['id']
     cleared = client.delete(f'/failures/{first}')
-    assert (cleared.status_code, cleared.json()['removal']) == (200, 'cleared')
+    assert (cleared.status_code, cleared.json()) == (200, listed['failures'][0])
     assert client.delete(f'/failures/{first}').status_code == 404
-    rest = client.delete('/failures').json()['failures']
-    assert len(rest) == 1
+    assert client.get(f'/jobs/{jobs[0]["id"]}').json()['failures'] == []
+    assert client.delete('/failures').json() == {'failures': [listed['failures'][1]]}
     assert client.delete('/failures').json() == {'failures': []}
-    assert client.get('/failures').json()['failures'] == []
+    assert client.get('/failures').json() == {'failures': []}
 
 
 def test_health_is_200_when_everything_is_healthy(client):
     """A healthy service reports 200 with every component and the yt-dlp version (DESIGN 5.14)."""
-    client.get('/jobs')  # ensures a reconciliation pass has checked the marker
+    wait_for_staging_check(client)
     response = client.get('/health')
     body = response.json()
     assert response.status_code == 200
     assert body['healthy'] is True
     assert body['database'] == {'ok': True, 'error': None}
     assert (body['staging']['ok'], body['staging']['marker_present'], body['staging']['paused']) == (True, True, False)
-    assert body['threads'] == {'worker': True, 'reconciler': True}
+    assert body['threads'] == {'worker': True}
     assert body['yt_dlp_version'] == testee.yt_dlp.version.__version__
 
 
 def test_health_is_503_while_the_marker_is_missing(client, staging_root):
     """A missing marker makes the service unhealthy and reports work as paused (5.13, 5.14)."""
+    wait_for_staging_check(client)
     (staging_root / staging.MARKER_NAME).unlink()
-    client.get('/jobs')
+    worker = client.app.state.runtime.worker
+    worker.wake()
+    wait_for(lambda: not worker.staging_check().marker_present)
     response = client.get('/health')
     assert response.status_code == 503
     assert response.json()['staging'] == {'ok': False, 'marker_present': False,
@@ -343,8 +328,10 @@ def test_health_is_503_while_the_marker_is_missing(client, staging_root):
 
 def test_health_is_503_when_the_staging_check_is_stale(client, monotonic):
     """A cached staging check older than the limit counts as unhealthy (C35)."""
-    client.get('/jobs')
-    monotonic.now += 61
+    wait_for_staging_check(client)
+    monotonic.now += 60
+    assert client.get('/health').status_code == 200  # exactly at the limit is still fresh
+    monotonic.now += 1
     response = client.get('/health')
     assert response.status_code == 503
     assert response.json()['staging']['checked_seconds_ago'] == 61.0
@@ -352,7 +339,7 @@ def test_health_is_503_when_the_staging_check_is_stale(client, monotonic):
 
 def test_health_is_503_when_the_database_fails(client):
     """A database that cannot be locked for writing is unhealthy."""
-    client.get('/jobs')
+    wait_for_staging_check(client)
     with patch.object(testee.Store, 'check', side_effect=sqlite3.OperationalError('database is locked')):
         response = client.get('/health')
     assert response.status_code == 503
@@ -375,12 +362,13 @@ def test_health_is_503_while_the_api_cannot_open_the_database_and_recovers(setti
             # A request needing the database fails (a generic 500 in production; TestClient re-raises it),
             # and the failure must not break later calls.
             with pytest.raises(sqlite3.OperationalError):
-                client.get('/jobs/changes')
+                client.get('/jobs')
             response = client.get('/health')
             assert response.status_code == 503
             assert response.json()['database'] == {'ok': False, 'error': 'unable to open database file'}
             failing.clear()
-            client.get('/jobs')
+            assert client.get('/jobs').status_code == 200
+            wait_for_staging_check(client)
             assert client.get('/health').status_code == 200
         runtime = client.app.state.runtime
     assert not runtime.worker_thread.is_alive()
@@ -392,56 +380,52 @@ def test_shutdown_closes_cleanly_when_the_api_never_opened_its_connection(settin
     with make_client(settings, media, monotonic) as client:
         runtime = client.app.state.runtime
     assert runtime._executor._shutdown
-    assert not runtime.reconcile_thread.is_alive()
+    assert not runtime.worker_thread.is_alive()
 
 
 def test_health_is_503_when_a_thread_has_died(client):
     """A stopped worker thread is reported as not alive."""
-    client.get('/jobs')
+    wait_for_staging_check(client)
     runtime = client.app.state.runtime
     runtime.worker.stop()
     runtime.worker_thread.join(10)
     response = client.get('/health')
     assert response.status_code == 503
-    assert response.json()['threads'] == {'worker': False, 'reconciler': True}
+    assert response.json()['threads'] == {'worker': False}
 
 
-def test_api_stays_responsive_while_a_staging_probe_is_stalled(settings, media, monotonic):
-    """With the reconciler stuck on the share, GET /jobs returns after its bounded wait (C25)."""
+def test_api_stays_responsive_while_the_worker_is_stalled_on_the_share(settings, media, monotonic):
+    """With the worker stuck in a marker check, as on a stalled SMB share, the API still answers (C25)."""
     entered = threading.Event()
     release = threading.Event()
+    real_marker_present = staging.marker_present
 
-    class StalledReconciler(testee.Reconciler):
-        """A reconciler whose staging probe blocks until released, as on a stalled SMB share."""
+    def stalled(root):
+        entered.set()
+        release.wait(30)
+        return real_marker_present(root)
 
-        def _reconcile(self, store):
-            entered.set()
-            release.wait(30)
-            return super()._reconcile(store)
-
-    settings = Settings(**{**settings.__dict__, 'jobs_reconcile_wait': 0.1})
-    with patch.object(testee, 'Reconciler', StalledReconciler):
-        client = make_client(settings, media, monotonic)
-        try:
-            with client:
+    try:
+        with patch.object(staging, 'marker_present', stalled), make_client(settings, media, monotonic) as client:
+            try:
                 assert entered.wait(10)
-                listed = client.get('/jobs')
-                assert (listed.status_code, listed.json()['reconciled_at']) == (200, None)
+                assert client.get('/jobs').status_code == 200
+                assert client.post('/jobs/videos', json={'url': VIDEO_URL}).status_code == 202
                 health = client.get('/health')
                 assert health.status_code == 503
                 assert health.json()['staging']['marker_present'] is None
-                release.set()
-        finally:
-            release.set()
+            finally:
+                release.set()  # before the lifespan joins the worker
+    finally:
+        release.set()
 
 
-def test_lifespan_stops_both_threads(settings, media, monotonic):
-    """Leaving the lifespan stops the worker and reconciliation threads (decision C36)."""
+def test_lifespan_stops_the_worker(settings, media, monotonic):
+    """Leaving the lifespan stops the worker thread (decision C36)."""
     with make_client(settings, media, monotonic) as client:
         runtime = client.app.state.runtime
         assert runtime.worker_thread.is_alive()
     assert not runtime.worker_thread.is_alive()
-    assert not runtime.reconcile_thread.is_alive()
 
 
 def test_shutdown_abandons_a_thread_that_outlasts_the_grace(settings, media, monotonic, caplog):
@@ -449,7 +433,7 @@ def test_shutdown_abandons_a_thread_that_outlasts_the_grace(settings, media, mon
     started = threading.Event()
     release = threading.Event()
 
-    def slow_download(video, path, on_progress):
+    def slow_download(video, path, on_activity):
         started.set()
         release.wait(30)
         path.write_bytes(b'late')

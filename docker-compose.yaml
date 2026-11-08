@@ -22,8 +22,8 @@ services:
     # No container_name: a fixed name would stop the dev container and the production service
     # from coexisting on one Docker daemon (DESIGN decision C28).
     init: true
-    # One process serves the API and runs the worker and reconciliation threads (DESIGN section
-    # 7); never add workers. The dev container overrides the command, port and restart policy.
+    # One process serves the API and runs the worker thread (DESIGN section 7); never add
+    # server workers. The dev container overrides the command, port and restart policy.
     command: ["python3", "-m", "youtube_collector"]
     environment:
       COLLECTOR_STAGING_DIR: /workspaces/youtube-collector/assets
@@ -32,9 +32,7 @@ services:
       COLLECTOR_SLEEP_REQUESTS: ${COLLECTOR_SLEEP_REQUESTS:-}
       COLLECTOR_SLEEP_DOWNLOAD: ${COLLECTOR_SLEEP_DOWNLOAD:-}
       COLLECTOR_MAX_SLEEP_DOWNLOAD: ${COLLECTOR_MAX_SLEEP_DOWNLOAD:-}
-      COLLECTOR_RECONCILE_INTERVAL: ${COLLECTOR_RECONCILE_INTERVAL:-}
-      COLLECTOR_MAX_WAIT: ${COLLECTOR_MAX_WAIT:-}
-      COLLECTOR_TOMBSTONE_RETENTION_DAYS: ${COLLECTOR_TOMBSTONE_RETENTION_DAYS:-}
+      COLLECTOR_JOB_RETENTION_DAYS: ${COLLECTOR_JOB_RETENTION_DAYS:-}
     # LAN-only and unauthenticated (DESIGN decision C7): publish only on a trusted network.
     ports:
       - "${COLLECTOR_PORT:-8000}:8000"

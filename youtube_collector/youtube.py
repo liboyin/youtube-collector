@@ -15,7 +15,7 @@ from typing import Protocol, Self
 import yt_dlp
 
 __all__ = [
-    'MEDIA_FORMAT', 'Downloader', 'Pacing', 'Playlist', 'PlaylistVideo', 'ProgressCallback', 'VideoInfo',
+    'MEDIA_FORMAT', 'ActivityCallback', 'Downloader', 'Pacing', 'Playlist', 'PlaylistVideo', 'VideoInfo',
     'YoutubeClient', 'firefox_cookies_present', 'firefox_profile_roots',
 ]
 
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 # The source revision's format selection: MP4 video with M4A audio, or a single MP4 file (DESIGN 5.5).
 MEDIA_FORMAT = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]'
 
-type ProgressCallback = Callable[[int, int | None], None]
+type ActivityCallback = Callable[[], None]
 type Options = dict[str, object]
 
 
@@ -156,33 +156,6 @@ class _YtDlpLogger:
         logger.error(message)
 
 
-class _ProgressHook:
-    """Turn yt-dlp's per-file progress into cumulative bytes for one media download.
-
-    A video-plus-audio download fetches two files. Downloaded bytes accumulate across them; the
-    total is the known size of the files so far, and None while the current file's size is unknown.
-    """
-
-    def __init__(self, on_progress: ProgressCallback) -> None:
-        """Remember where to report progress."""
-        self._on_progress = on_progress
-        self._completed = 0
-
-    def __call__(self, status: Mapping[str, object]) -> None:
-        """Handle one yt-dlp progress report."""
-        downloaded = _int_or_none(status.get('downloaded_bytes')) or 0
-        total = _int_or_none(status.get('total_bytes'))
-        if status.get('status') == 'downloading':
-            self._on_progress(self._completed + downloaded, None if total is None else self._completed + total)
-        elif status.get('status') == 'finished':
-            self._completed += total if total is not None else downloaded
-
-
-def _int_or_none(value: object) -> int | None:
-    """Return an integer byte count, or None for anything else."""
-    return int(value) if isinstance(value, int | float) and not isinstance(value, bool) else None
-
-
 class YoutubeClient:
     """yt-dlp with the collector's options, used only from the worker thread.
 
@@ -258,10 +231,12 @@ class YoutubeClient:
             raise ValueError(f'yt-dlp returned no video for {url}')
         return VideoInfo(video_id=video_id, title=_text(info.get('title')) or '', info=info)
 
-    def download_media(self, video: VideoInfo, path: Path, on_progress: ProgressCallback) -> None:
+    def download_media(self, video: VideoInfo, path: Path, on_activity: ActivityCallback) -> None:
         """Download a video as MP4 to ``path``, which normally lies in a fresh stage directory.
 
         yt-dlp may create temporary files beside ``path``; it merges video and audio into ``path``.
+        ``on_activity`` is called on every yt-dlp progress report, which never carries data the
+        collector records: the worker uses it to keep its staging check fresh (decision C43).
 
         Raises:
             yt_dlp.utils.DownloadError: If the download fails.
@@ -272,7 +247,7 @@ class YoutubeClient:
             merge_output_format='mp4',
             # A literal path: '%' would otherwise start an output-template field.
             outtmpl={'default': str(path).replace('%', '%%')},
-            progress_hooks=[_ProgressHook(on_progress)],
+            progress_hooks=[lambda _report: on_activity()],
         )
         with self._factory(options) as downloader:
             downloader.process_ie_result(video.info, download=True)

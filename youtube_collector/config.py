@@ -30,13 +30,9 @@ class Settings:
         database: The SQLite file on the named volume (``COLLECTOR_DATABASE``).
         pacing: yt-dlp's request pacing (``COLLECTOR_SLEEP_REQUESTS``, ``COLLECTOR_SLEEP_DOWNLOAD``,
             ``COLLECTOR_MAX_SLEEP_DOWNLOAD``); no extra sleep by default.
-        reconcile_interval: Seconds between periodic reconciliation passes (``COLLECTOR_RECONCILE_INTERVAL``).
-        max_wait: The cap on a long poll's ``wait`` in seconds (``COLLECTOR_MAX_WAIT``).
-        tombstone_retention: Seconds tombstones are kept (``COLLECTOR_TOMBSTONE_RETENTION_DAYS``, in days).
+        job_retention: Seconds a finished job stays readable (``COLLECTOR_JOB_RETENTION_DAYS``, in days).
         host: The address the HTTP server binds (``COLLECTOR_HOST``).
         port: The HTTP port inside the container (``COLLECTOR_PORT``).
-        jobs_reconcile_wait: How long ``GET /jobs`` waits for the pass it requested; an implementation
-            default (decision C35), not part of the contract.
         staging_health_max_age: The age beyond which a cached staging check counts as unhealthy; an
             implementation default (decision C35).
         shutdown_grace: How long shutdown waits for the current yt-dlp call before abandoning it
@@ -46,12 +42,9 @@ class Settings:
     staging_dir: Path
     database: Path = DEFAULT_DATABASE
     pacing: Pacing = Pacing()
-    reconcile_interval: float = 30.0
-    max_wait: float = 60.0
-    tombstone_retention: float = 7 * 24 * 60 * 60
+    job_retention: float = 7 * 24 * 60 * 60
     host: str = '0.0.0.0'
     port: int = 8000
-    jobs_reconcile_wait: float = 2.0
     staging_health_max_age: float = 120.0
     shutdown_grace: float = 30.0
 
@@ -79,17 +72,15 @@ class Settings:
                 sleep_download=sleep_download,
                 max_sleep_download=max_sleep,
             ),
-            reconcile_interval=_required(_number(environ, 'COLLECTOR_RECONCILE_INTERVAL', 30.0, positive=True)),
-            max_wait=_required(_number(environ, 'COLLECTOR_MAX_WAIT', 60.0)),
-            tombstone_retention=_required(_number(environ, 'COLLECTOR_TOMBSTONE_RETENTION_DAYS', 7.0)) * 86400,
+            job_retention=_required(_number(environ, 'COLLECTOR_JOB_RETENTION_DAYS', 7.0)) * 86400,
             host=environ.get('COLLECTOR_HOST') or '0.0.0.0',
             port=_port(environ.get('COLLECTOR_PORT') or '8000'),
             shutdown_grace=_required(_number(environ, 'COLLECTOR_SHUTDOWN_GRACE', 30.0)),
         )
 
 
-def _number(environ: Mapping[str, str], name: str, default: float | None, *, positive: bool = False) -> float | None:
-    """Parse a finite, non-negative number (positive when asked), or return the default when unset.
+def _number(environ: Mapping[str, str], name: str, default: float | None) -> float | None:
+    """Parse a finite, non-negative number, or return the default when unset.
 
     Raises:
         SettingsError: If the value is not such a number.
@@ -101,8 +92,8 @@ def _number(environ: Mapping[str, str], name: str, default: float | None, *, pos
         value = float(raw)
     except ValueError:
         raise SettingsError(f'{name} must be a number, got {raw!r}') from None
-    if not math.isfinite(value) or value < 0 or (positive and value == 0):
-        raise SettingsError(f'{name} must be a finite {"positive" if positive else "non-negative"} number, got {raw!r}')
+    if not math.isfinite(value) or value < 0:
+        raise SettingsError(f'{name} must be a finite non-negative number, got {raw!r}')
     return value
 
 

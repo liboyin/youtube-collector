@@ -2,7 +2,7 @@
 
 This document owns the product requirements, system design, product contracts and accepted user decisions. [README](README.md) covers setup and operation; [TODO](tasks/TODO.md) owns outstanding work and unresolved choices; [AGENTS](AGENTS.md) and the repository skills own working procedures.
 
-Status: accepted requirements, written 2026-11-06 as a product requirements document (originally `PRD.md`) in a design discussion held in the `youtube-whisperer` repository. They include assumptions that stand unless the user objects. **The service is implemented but not yet run against real YouTube** (task [T25](tasks/open/T25.md)): sections 5, 6 and 10 describe the required behavior, which the components in section 14 implement once decisions C39–C47 are built (until then those sections run ahead of the code, and section 14 records what exists); section 7 records which deployment and development-environment parts the scaffolding tasks have implemented, and section 14 records the application components built so far. As components are built, record their architecture in section 14, and record later decisions with new IDs after the last one in section 11.
+Status: accepted requirements, written 2026-11-06 as a product requirements document (originally `PRD.md`) in a design discussion held in the `youtube-whisperer` repository. They include assumptions that stand unless the user objects. **The service is implemented but not yet run against real YouTube** (task [T25](tasks/open/T25.md)): sections 5, 6 and 10 describe the required behavior, which the components in section 14 implement; section 7 records which deployment and development-environment parts the scaffolding tasks have implemented, and section 14 records the application components built so far. As components are built, record their architecture in section 14, and record later decisions with new IDs after the last one in section 11.
 
 Requirement words (MUST, SHOULD, MAY) follow BCP 14. Behavior inherited from `youtube-whisperer` cites that project at revision `474f5dc` (the "source revision"); it describes what the code did there, which the collector reimplements rather than imports.
 
@@ -396,9 +396,9 @@ These follow from repository evidence or the discussion, and stand unless the us
 
 ## 14. Architecture
 
-The application is one package, `youtube_collector`, with one module per responsibility. API request handlers never touch the staging share (C25): only the worker and the reconciliation thread call the staging layer.
+The application is one package, `youtube_collector`, with one module per responsibility. API request handlers never touch the staging share (C25): only the worker calls the staging layer.
 
-Implemented, as built before decisions C39–C47:
+Implemented:
 
 | Module | Responsibility | Task |
 |---|---|---|
@@ -406,14 +406,12 @@ Implemented, as built before decisions C39–C47:
 | `languages` | Checks that language candidates are well-formed BCP 47 tags and selects one caption track (5.6) | [T16](tasks/closed/T16.md) |
 | `staging` | File and folder names, the root marker, existing-artifact lookup by ID, `NEVER` publication through a stage directory, and presence checks (5.4, 5.13) | [T17](tasks/closed/T17.md) |
 | `categories` | Maps an error to a failure category and keeps its raw message (5.9) | [T18](tasks/closed/T18.md) |
-| `store` | The SQLite database: jobs, items, failures, idempotency keys, one global revision counter and tombstones; one connection per thread and one `BEGIN IMMEDIATE` transaction per write, so revisions become visible in commit order (5.1, 5.3, 5.7–5.10, 5.12, section 7); change pages, snapshot revisions and job views for the feed (C27, C38) | [T19](tasks/closed/T19.md), [T23](tasks/closed/T23.md) |
-| `youtube` | yt-dlp adapter: playlist expansion, one metadata extraction per video reused for its MP4 download, progress, pacing options and Firefox cookie detection (5.3, 5.5, 5.11) | [T20](tasks/closed/T20.md) |
+| `store` | The SQLite database: jobs, items and failures; one connection per thread and one `BEGIN IMMEDIATE` transaction per write; deleting expired jobs in the submission's transaction (5.1, 5.3, 5.7–5.10, 5.12, C42, section 7) | [T19](tasks/closed/T19.md), [T33](tasks/closed/T33.md) |
+| `youtube` | yt-dlp adapter: playlist expansion, one metadata extraction per video reused for its MP4 download, activity callbacks, pacing options and Firefox cookie detection (5.3, 5.5, 5.11) | [T20](tasks/closed/T20.md) |
 | `captions` | Caption adapter: lists tracks, selects one with `languages`, fetches SRT, with 10 s connect and 30 s read timeouts (5.6, D38) | [T20](tasks/closed/T20.md) |
-| `worker` | The YouTube worker thread: round-robin units, the marker pause, `NEVER` checks before network work, staged downloads, caption outcomes by job kind, throttled progress and restart recovery (5.3, 5.4, 5.7, 5.10, 5.12, 5.13) | [T21](tasks/closed/T21.md) |
-| `reconcile` | The reconciliation thread: periodic and requested passes that remove items whose recorded files are gone and finished jobs left with nothing, with the marker checked before and after probing; cached marker results and pass times that the API reads without touching the share (5.8, 5.13, 5.14, C25, C26) | [T22](tasks/closed/T22.md) |
-| `notify` | Thread-safe wake-ups for long-poll waiters on the event loop: tickets taken before each database read, so no change committed during a read is missed (5.10) | [T23](tasks/closed/T23.md) |
+| `worker` | The YouTube worker thread: round-robin units, the marker pause, the cached staging check that `/health` reads, `NEVER` checks before network work, staged downloads, caption outcomes by job kind and restart recovery (5.3, 5.4, 5.7, 5.12–5.14, C43) | [T21](tasks/closed/T21.md), [T33](tasks/closed/T33.md) |
 | `config` | Settings from the environment with section 7's defaults; the only module that reads the environment | [T24](tasks/closed/T24.md) |
-| `api` | The FastAPI app and the service's composition: every endpoint in section 6, the lifespan that starts and stops both threads, database calls on one dedicated thread, long polls on the event loop, and health from cached results (5.1, 5.8, 5.10, 5.14, C25, C36) | [T24](tasks/closed/T24.md) |
+| `api` | The FastAPI app and the service's composition: every endpoint in section 6, the lifespan that starts and stops the worker thread, database calls on one dedicated thread, and health from the worker's cached check (5.1, 5.8, 5.10, 5.14, C25, C36) | [T24](tasks/closed/T24.md), [T33](tasks/closed/T33.md) |
 | `__main__` | `python3 -m youtube_collector`: one uvicorn process | [T24](tasks/closed/T24.md) |
 
 The first run against real YouTube is task [T25](tasks/open/T25.md).

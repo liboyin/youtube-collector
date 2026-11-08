@@ -107,25 +107,6 @@ def test_yt_dlp_logger_routes_messages_to_logging(caplog):
     ]
 
 
-def test_progress_hook_accumulates_bytes_across_files():
-    """Video and audio downloads add up, and the total is known only while the current size is."""
-    reports = []
-    hook = testee._ProgressHook(lambda downloaded, total: reports.append((downloaded, total)))
-    hook({'status': 'downloading', 'downloaded_bytes': 10, 'total_bytes': 100})
-    hook({'status': 'finished', 'downloaded_bytes': 100, 'total_bytes': 100})
-    hook({'status': 'downloading', 'downloaded_bytes': 5, 'total_bytes_estimate': 50})
-    hook({'status': 'finished', 'downloaded_bytes': 50})
-    hook({'status': 'downloading', 'downloaded_bytes': 1.0, 'total_bytes': 2})
-    hook({'status': 'error'})
-    assert reports == [(10, 100), (105, None), (151, 152)]
-
-
-@pytest.mark.parametrize(('value', 'expected'), [(3, 3), (2.9, 2), (True, None), ('3', None), (None, None)])
-def test_int_or_none_accepts_numbers_only(value, expected):
-    """Byte counts are numbers; booleans and strings are not."""
-    assert testee._int_or_none(value) == expected
-
-
 def test_options_use_deno_quiet_logging_and_configured_pacing():
     """Every request uses Deno, routes output to logging and takes pacing from configuration (DESIGN 5.3, 5.5)."""
     options = client(Factory(result={}), pacing=testee.Pacing(1.5, 2.0, 4.0))._options(extra=1)
@@ -215,18 +196,18 @@ def test_video_info_rejects_results_without_a_video(result):
 
 def test_download_media_processes_the_extracted_info_with_media_options(tmp_path):
     """The download reuses the extraction, selects MP4 formats and writes to the literal path (DESIGN 5.5)."""
-    reports = []
-    factory = Factory(result=None, progress=[{'status': 'downloading', 'downloaded_bytes': 1, 'total_bytes': 2}])
+    activity = []
+    factory = Factory(result=None, progress=[{'status': 'downloading'}, {'status': 'finished'}])
     video = testee.VideoInfo(VIDEO, 'Title', {'id': VIDEO})
     path = tmp_path / '100% [x]' / 'a.mp4'
-    client(factory, cookies=True).download_media(video, path, lambda done, total: reports.append((done, total)))
+    client(factory, cookies=True).download_media(video, path, lambda: activity.append(1))
     [made] = factory.made
     assert made.calls == [('process_ie_result', video.info, True)]
     assert made.options['format'] == 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]'
     assert made.options['merge_output_format'] == 'mp4'
     assert made.options['outtmpl'] == {'default': str(path).replace('%', '%%')}
     assert made.options['cookiesfrombrowser'] == ('firefox',)
-    assert reports == [(1, 2)]
+    assert len(activity) == 2  # every yt-dlp report counts as activity, for the marker heartbeat (C43)
 
 
 class QuietHandler(SimpleHTTPRequestHandler):
@@ -344,10 +325,10 @@ def test_download_media_writes_to_a_literal_path_with_real_yt_dlp(tmp_path, loca
     path.parent.mkdir()
     reports = []
     youtube = client(yt_dlp.YoutubeDL)
-    youtube.download_media(testee.VideoInfo(VIDEO, 'T', info), path, lambda done, total: reports.append((done, total)))
+    youtube.download_media(testee.VideoInfo(VIDEO, 'T', info), path, lambda: reports.append(1))
     assert path.read_bytes() == b'x' * 4096
     assert sorted(p.name for p in path.parent.iterdir()) == ['media.mp4']
-    assert reports[-1] == (4096, 4096)
+    assert reports  # real yt-dlp reports reach the callback
 
 
 def test_text_accepts_non_empty_strings_only():

@@ -1,4 +1,4 @@
-"""Tests for the YouTube worker (DESIGN 5.3, 5.4, 5.7, 5.9, 5.10, 5.12, 5.13); no test contacts YouTube."""
+"""Tests for the YouTube worker (DESIGN 5.3, 5.4, 5.7, 5.9, 5.12-5.14); no test contacts YouTube."""
 
 import logging
 import os
@@ -16,6 +16,7 @@ from youtube_collector.youtube import Playlist, PlaylistVideo, VideoInfo
 VIDEO = 'abcdefghijk'
 OTHER = 'bbbbbbbbbbb'
 PLAYLIST = 'PLlist'
+RETENTION = 7 * 86400.0
 
 
 @dataclass(frozen=True)
@@ -36,7 +37,6 @@ class FakeMedia:
         self.expand_error = None
         self.info_error = None
         self.download_error = None
-        self.progress = [(5, 10)]
         self.during_download = None
         self.calls = []
 
@@ -55,11 +55,10 @@ class FakeMedia:
         video_id = url.rsplit('=', 1)[1]
         return VideoInfo(video_id, self.titles[video_id], {'id': video_id})
 
-    def download_media(self, video, path, on_progress):
-        """Write fake media at the stage path, reporting progress, or raise."""
+    def download_media(self, video, path, on_activity):
+        """Write fake media at the stage path, reporting activity, or raise."""
         self.calls.append(('download', video.video_id, path))
-        for downloaded, total in self.progress:
-            on_progress(downloaded, total)
+        on_activity()
         if self.during_download is not None:
             self.during_download(path)
         if self.download_error is not None:
@@ -147,18 +146,11 @@ def clock():
 
 
 @pytest.fixture
-def notified():
-    """Count notifications."""
-    return []
-
-
-@pytest.fixture
-def worker(db_path, root, media, captions, clock, notified):
+def worker(db_path, root, media, captions, clock):
     """Provide a worker on the test's store, staging root and fakes."""
     return testee.Worker(
         open_store=lambda: store.Store(db_path, lambda: 1_000_000.0), staging_root=root, media=media,
-        captions=captions, notify=lambda: notified.append(1), monotonic=clock, idle_wait=60, pause_wait=60,
-        error_wait=0,
+        captions=captions, monotonic=clock, idle_wait=60, pause_wait=60, error_wait=0,
     )
 
 
@@ -166,16 +158,16 @@ def submit(db, kind=store.JobKind.VIDEOS_WITH_CAPTIONS, video_id=VIDEO, language
     """Submit a single-video job and return it."""
     return db.submit(
         kind=kind, url=f'https://youtu.be/{video_id}', target_type=store.TargetType.VIDEO, target_id=video_id,
-        languages=None if kind is store.JobKind.VIDEOS else list(languages),
-    ).job
+        languages=None if kind is store.JobKind.VIDEOS else list(languages), retention_seconds=RETENTION,
+    )
 
 
 def submit_playlist(db, kind=store.JobKind.VIDEOS):
     """Submit a playlist job and return it."""
     return db.submit(
         kind=kind, url=f'https://www.youtube.com/playlist?list={PLAYLIST}', target_type=store.TargetType.PLAYLIST,
-        target_id=PLAYLIST, languages=None if kind is store.JobKind.VIDEOS else ['en'],
-    ).job
+        target_id=PLAYLIST, languages=None if kind is store.JobKind.VIDEOS else ['en'], retention_seconds=RETENTION,
+    )
 
 
 def item_of(db, job, position=0):
@@ -190,14 +182,14 @@ def files(root):
 
 def test_step_pauses_without_the_marker_and_changes_nothing(worker, db, root, media, caplog):
     """A missing marker pauses work with no record change, and the pause and resume are logged (DESIGN 5.13)."""
-    submit(db)
+    job = submit(db)
     (root / staging.MARKER_NAME).unlink()
-    revision = db.current_revision()
+    before = db.get_job(job['id'])
     with caplog.at_level(logging.WARNING, logger=testee.__name__):
         assert worker.step(db) is testee.Step.PAUSED
         assert worker.step(db) is testee.Step.PAUSED
         assert worker.paused
-        assert db.current_revision() == revision
+        assert db.get_job(job['id']) == before
         assert media.calls == []
         (root / staging.MARKER_NAME).touch()
         assert worker.step(db) is testee.Step.PROCESSED
@@ -211,7 +203,7 @@ def test_step_is_idle_without_work(worker, db):
     assert worker.step(db) is testee.Step.IDLE
 
 
-def test_step_expands_a_playlist_into_items(worker, db, media, notified):
+def test_step_expands_a_playlist_into_items(worker, db, media):
     """Expansion persists the entries as items with listed titles (DESIGN 5.3)."""
     job = submit_playlist(db)
     assert worker.step(db) is testee.Step.EXPANDED
@@ -219,7 +211,6 @@ def test_step_expands_a_playlist_into_items(worker, db, media, notified):
     assert (expanded['state'], expanded['playlist_title']) == ('running', 'A list')
     assert [(i['video_id'], i['title']) for i in expanded['items']] == [(VIDEO, 'Listed A'), (OTHER, None)]
     assert media.calls == [('expand', f'https://www.youtube.com/playlist?list={PLAYLIST}')]
-    assert len(notified) == 2
 
 
 def test_step_finishes_a_playlist_whose_expansion_fails(worker, db, media):
@@ -234,7 +225,7 @@ def test_step_finishes_a_playlist_whose_expansion_fails(worker, db, media):
     )
 
 
-def test_videos_item_downloads_media_to_the_root(worker, db, root, media, captions, notified, clock):
+def test_videos_item_downloads_media_to_the_root(worker, db, root, media, captions):
     """A videos item downloads and publishes id - Title.mp4 at the staging root."""
     job = submit(db, kind=store.JobKind.VIDEOS)
     assert worker.step(db) is testee.Step.PROCESSED
@@ -249,7 +240,6 @@ def test_videos_item_downloads_media_to_the_root(worker, db, root, media, captio
     assert [call[0] for call in media.calls] == ['info', 'download']
     assert media.calls[0] == ('info', f'https://www.youtube.com/watch?v={VIDEO}')
     assert captions.calls == []
-    assert len(notified) == 3  # started, one progress write, finished
 
 
 def test_existing_media_is_not_downloaded_again(worker, db, root, media):
@@ -504,31 +494,71 @@ def test_a_marker_lost_before_captions_publishes_nothing(worker, db, root, capti
     assert files(root) == []
 
 
-def test_progress_writes_are_throttled(worker, db, media, clock):
-    """Progress is written at most once per interval, so waiters are not woken by every tick (DESIGN 5.10)."""
-    written = []
-    original = db.record_progress
+def test_a_repeat_submission_finds_the_files_and_makes_no_request(worker, db, media, captions):
+    """Resubmitting after a crash creates a job that reports existing without contacting YouTube (C46)."""
+    first = submit(db)
+    worker.step(db)
+    media.calls.clear()
+    captions.calls.clear()
+    second = submit(db)
+    worker.step(db)
+    assert second['id'] != first['id']
+    item = item_of(db, second)
+    assert (item['media']['outcome'], item['captions']['outcome']) == ('existing', 'existing')
+    assert item['media']['path'] == item_of(db, first)['media']['path']
+    assert (media.calls, captions.calls) == ([], [])
 
-    def record(item_id, downloaded, total):
-        written.append((downloaded, total))
-        original(item_id, downloaded, total)
 
-    db.record_progress = record
-    ticks = iter([(1, 10), (2, 10), (3, 10), (4, None)])
+def test_staging_check_is_empty_before_the_first_check(worker):
+    """Nothing has been checked before the worker's first step."""
+    assert worker.staging_check() is None
 
-    media.progress = []
-    original_download = media.download_media
 
-    def download(video, path, on_progress):
-        for downloaded, total in ticks:
-            on_progress(downloaded, total)
-            clock.now += 0.6  # ticks 0.6 s apart against a 1 s interval
-        original_download(video, path, on_progress)
+def test_step_records_the_staging_check(worker, db, root, clock):
+    """Each step's marker check is recorded with its time, present or not, for /health (C43)."""
+    clock.now = 7.0
+    worker.step(db)
+    assert worker.staging_check() == testee.StagingCheck(True, 7.0)
+    (root / staging.MARKER_NAME).unlink()
+    clock.now = 9.0
+    worker.step(db)
+    assert worker.staging_check() == testee.StagingCheck(False, 9.0)
+
+
+def test_a_long_download_keeps_the_staging_check_fresh_but_throttled(worker, db, media, clock):
+    """Activity repeats the marker check once per interval, so a long download is not stale (C43)."""
+    seen = []
+
+    def download(video, path, on_activity):
+        for now in (0.0, 10.0, 29.9, 30.0, 40.0, 60.0):
+            clock.now = now
+            on_activity()
+            seen.append(worker.staging_check().checked_at)
+        path.write_bytes(b'media')
 
     media.download_media = download
     submit(db, kind=store.JobKind.VIDEOS)
     worker.step(db)
-    assert written == [(1, 10), (3, 10)]
+    assert seen == [0.0, 0.0, 0.0, 30.0, 30.0, 60.0]
+
+
+def test_a_download_reports_a_marker_lost_while_it_runs(worker, db, root, media, clock):
+    """A heartbeat that finds the marker gone is visible at once; publication still refuses the file."""
+    seen = []
+
+    def download(video, path, on_activity):
+        (root / staging.MARKER_NAME).unlink()
+        clock.now = 30.0
+        on_activity()
+        seen.append(worker.staging_check().marker_present)
+        path.write_bytes(b'media')
+
+    media.download_media = download
+    job = submit(db, kind=store.JobKind.VIDEOS)
+    worker.step(db)
+    assert seen == [False]
+    assert item_of(db, job)['state'] == 'failed'
+    assert files(root) == []
 
 
 def test_round_robin_alternates_between_jobs(worker, db, media):
@@ -548,8 +578,8 @@ def test_run_recovers_processes_and_stops(worker, db, media):
     downloaded = threading.Event()
     original = media.download_media
 
-    def download(video, path, on_progress):
-        original(video, path, on_progress)
+    def download(video, path, on_activity):
+        original(video, path, on_activity)
         downloaded.set()
         worker.stop()
 

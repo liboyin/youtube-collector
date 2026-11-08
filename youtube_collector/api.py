@@ -1,14 +1,12 @@
 """The HTTP API and the service's composition (DESIGN 5.1, 5.8, 5.10, 5.14 and section 6).
 
-One process runs the HTTP server, the YouTube worker thread and the reconciliation thread
-(DESIGN section 7). Request handlers never contact YouTube and never touch the staging share
-(decision C25): the worker owns YouTube, the reconciler owns staging, and handlers read the
-database and the reconciler's cached results. Database calls run on one dedicated thread with
-its own connection, so the event loop never blocks on SQLite; long polls wait on the loop.
+One process runs the HTTP server and the YouTube worker thread (DESIGN section 7). Request handlers
+never contact YouTube and never touch the staging share (decision C25): the worker owns both, and
+handlers read the database and the worker's cached staging check. Database calls run on one dedicated
+thread with its own connection, so the event loop never blocks on SQLite.
 """
 
 import asyncio
-import json
 import logging
 import sqlite3
 import threading
@@ -17,21 +15,18 @@ from collections.abc import AsyncIterator, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Self
 
 import yt_dlp.version
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from youtube_collector.captions import CaptionClient
 from youtube_collector.config import Settings
 from youtube_collector.languages import is_well_formed
-from youtube_collector.notify import Notifier
-from youtube_collector.reconcile import Reconciler
-from youtube_collector.store import CursorPruned, IdempotencyConflict, JobKind, Store, TargetType, initialize
+from youtube_collector.store import JobKind, Store, TargetType, initialize
 from youtube_collector.urls import PlaylistTarget, UnsupportedUrlError, parse_target
 from youtube_collector.worker import CaptionSource, MediaSource, Worker
 from youtube_collector.youtube import YoutubeClient, firefox_cookies_present, firefox_profile_roots
@@ -73,10 +68,6 @@ class _VideosRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
     url: str = Field(description='A single-video or playlist URL (DESIGN 5.2).')
-    idempotency_key: str | None = Field(
-        default=None, min_length=1, max_length=256,
-        description='Returns the earlier job when reused with the same body; 409 with another body.',
-    )
 
     @field_validator('url')
     @classmethod
@@ -106,27 +97,18 @@ class _CaptionsRequest(_VideosRequest):
 
 
 class _Runtime:
-    """Everything the service starts: the threads, the notifier and the API's database thread."""
+    """Everything the service starts: the worker thread and the API's database thread."""
 
     def __init__(self, settings: Settings, components: Components) -> None:
         """Create the database if needed and build the components; nothing runs until ``start``."""
         self.settings = settings
         self.components = components
         initialize(settings.database)
-        # Long polls really wait on asyncio's clock, so their deadlines use the real monotonic clock too,
-        # never the injected one, which tests freeze or advance by hand.
-        self.notifier = Notifier()
         self.worker = Worker(
             open_store=self._open_store, staging_root=settings.staging_dir, media=components.media,
-            captions=components.captions, notify=self.notifier.notify, monotonic=components.monotonic,
-        )
-        self.reconciler = Reconciler(
-            open_store=self._open_store, staging_root=settings.staging_dir, notify=self.notifier.notify,
-            clock=components.clock, monotonic=components.monotonic, interval=settings.reconcile_interval,
-            tombstone_retention=settings.tombstone_retention,
+            captions=components.captions, monotonic=components.monotonic,
         )
         self.worker_thread = threading.Thread(target=self.worker.run, name='youtube-worker', daemon=True)
-        self.reconcile_thread = threading.Thread(target=self.reconciler.run, name='reconciler', daemon=True)
         self._local = threading.local()
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='api-db')
 
@@ -158,40 +140,30 @@ class _Runtime:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self._executor, lambda: operation(self._api_store()))
 
-    def start(self, loop: asyncio.AbstractEventLoop) -> None:
-        """Bind the notifier to the event loop and start both threads."""
-        self.notifier.bind(loop)
+    def start(self) -> None:
+        """Start the worker thread."""
         self.worker_thread.start()
-        self.reconcile_thread.start()
 
     def stop(self) -> None:
-        """Stop both threads within the shutdown grace, then close the API's database thread.
+        """Stop the worker within the shutdown grace, then close the API's database thread.
 
         The worker finishes its current unit; if a yt-dlp call outlasts the grace, it is abandoned
         and restart recovery requeues the item (decision C36).
         """
         self.worker.stop()
-        self.reconciler.stop()
-        deadline = time.monotonic() + self.settings.shutdown_grace
-        for thread in (self.worker_thread, self.reconcile_thread):
-            thread.join(max(0.0, deadline - time.monotonic()))
-            if thread.is_alive():
-                logger.warning('%s did not stop within the shutdown grace; abandoning it', thread.name)
+        self.worker_thread.join(self.settings.shutdown_grace)
+        if self.worker_thread.is_alive():
+            logger.warning('%s did not stop within the shutdown grace; abandoning it', self.worker_thread.name)
         try:
             self._executor.submit(self._close_api_store).result()
         finally:
             self._executor.shutdown(wait=True)
 
 
-def _iso(timestamp: float | None) -> str | None:
-    """Format epoch seconds as ISO 8601 UTC, or pass None through."""
-    return None if timestamp is None else datetime.fromtimestamp(timestamp, UTC).isoformat()
-
-
 def create_app(
     settings: Settings, components_factory: Callable[[Settings], Components] = default_components,
 ) -> FastAPI:
-    """Build the FastAPI application; its lifespan starts and stops the service's threads.
+    """Build the FastAPI application; its lifespan starts and stops the worker thread.
 
     Args:
         settings: The service settings.
@@ -201,7 +173,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         runtime = _Runtime(settings, components_factory(settings))
-        runtime.start(asyncio.get_running_loop())
+        runtime.start()
         app.state.runtime = runtime
         try:
             yield
@@ -221,114 +193,60 @@ def create_app(
 
     service = Annotated[_Runtime, Depends(runtime)]
 
-    async def submit(rt: _Runtime, kind: JobKind, body: _VideosRequest, response: Response) -> Body:
-        """Create a job, or replay its idempotency key, and wake the worker (DESIGN 5.1)."""
+    async def submit(rt: _Runtime, kind: JobKind, body: _VideosRequest) -> Body:
+        """Create a job and wake the worker (DESIGN 5.1); expired jobs are deleted in the same write."""
         target = parse_target(body.url)
         languages = body.languages if isinstance(body, _CaptionsRequest) else None
-        canonical = json.dumps({'kind': kind.value, 'url': body.url, 'languages': languages}, sort_keys=True)
         target_type = TargetType.PLAYLIST if isinstance(target, PlaylistTarget) else TargetType.VIDEO
         target_id = target.playlist_id if isinstance(target, PlaylistTarget) else target.video_id
-        try:
-            submission = await rt.db(lambda store: store.submit(
-                kind=kind, url=body.url, target_type=target_type, target_id=target_id, languages=languages,
-                idempotency_key=body.idempotency_key, body=canonical,
-            ))
-        except IdempotencyConflict as error:
-            raise HTTPException(status.HTTP_409_CONFLICT, str(error)) from None
-        if submission.created:
-            rt.notifier.notify()
-            rt.worker.wake()
-        else:
-            response.status_code = status.HTTP_200_OK
-        return submission.job
+        job = await rt.db(lambda store: store.submit(
+            kind=kind, url=body.url, target_type=target_type, target_id=target_id, languages=languages,
+            retention_seconds=rt.settings.job_retention,
+        ))
+        rt.worker.wake()
+        return job
 
     @app.post('/jobs/videos', status_code=status.HTTP_202_ACCEPTED, summary='Submit a media job')
-    async def submit_videos(body: _VideosRequest, response: Response, rt: service) -> Body:
-        """Download MP4 media (DESIGN 5.1). 202 when created, 200 when an idempotency key replays."""
-        return await submit(rt, JobKind.VIDEOS, body, response)
+    async def submit_videos(body: _VideosRequest, rt: service) -> Body:
+        """Download MP4 media (DESIGN 5.1)."""
+        return await submit(rt, JobKind.VIDEOS, body)
 
     @app.post('/jobs/captions', status_code=status.HTTP_202_ACCEPTED, summary='Submit a captions job')
-    async def submit_captions(body: _CaptionsRequest, response: Response, rt: service) -> Body:
-        """Download SRT captions (DESIGN 5.1). 202 when created, 200 when an idempotency key replays."""
-        return await submit(rt, JobKind.CAPTIONS, body, response)
+    async def submit_captions(body: _CaptionsRequest, rt: service) -> Body:
+        """Download SRT captions (DESIGN 5.1)."""
+        return await submit(rt, JobKind.CAPTIONS, body)
 
     @app.post('/jobs/videos-with-captions', status_code=status.HTTP_202_ACCEPTED,
               summary='Submit a media-and-captions job')
-    async def submit_videos_with_captions(body: _CaptionsRequest, response: Response, rt: service) -> Body:
-        """Download MP4 media and SRT captions (DESIGN 5.1). 202 when created, 200 on replay."""
-        return await submit(rt, JobKind.VIDEOS_WITH_CAPTIONS, body, response)
+    async def submit_videos_with_captions(body: _CaptionsRequest, rt: service) -> Body:
+        """Download MP4 media and SRT captions (DESIGN 5.1)."""
+        return await submit(rt, JobKind.VIDEOS_WITH_CAPTIONS, body)
 
     @app.get('/jobs', summary='The status table')
     async def list_jobs(rt: service) -> Body:
-        """Every job with its items, after asking for a reconciliation pass (DESIGN 5.8, C38).
-
-        Waits a bounded time for the pass, never touching the share itself (C25), and reports when
-        the last pass completed and the revision the snapshot was read at.
-        """
-        ticket = rt.reconciler.request_pass()
-        await asyncio.to_thread(rt.reconciler.wait_for_pass, ticket, rt.settings.jobs_reconcile_wait)
-        snapshot = await rt.db(lambda store: store.jobs_snapshot())
-        return {
-            'jobs': list(snapshot.records), 'revision': snapshot.revision,
-            'reconciled_at': _iso(rt.reconciler.last_reconciled_at()),
-        }
-
-    @app.get('/jobs/changes', summary='The change feed')
-    async def changes(
-        rt: service,
-        since: Annotated[int, Query(ge=0, description='The cursor from the previous page; 0 to start.')] = 0,
-        wait: Annotated[float, Query(ge=0, description='Seconds to wait for a change; capped.')] = 0,
-        limit: Annotated[int, Query(ge=1, le=1000, description='The most entries to return.')] = 100,
-    ) -> Body:
-        """Changes after ``since``, each record once in its latest state, by revision (DESIGN 5.10, C38).
-
-        Returns at once when changes exist, otherwise after the first change or ``wait`` seconds. 410
-        means the cursor is older than pruned tombstones: resynchronize from ``GET /jobs`` and
-        ``GET /failures`` (C27).
-        """
-        try:
-            page = await rt.notifier.long_poll(
-                lambda: rt.db(lambda store: store.changes(since, limit)), lambda page: bool(page.entries),
-                min(wait, rt.settings.max_wait),
-            )
-        except CursorPruned as error:
-            raise HTTPException(status.HTTP_410_GONE, str(error)) from None
-        return {'changes': list(page.entries), 'cursor': page.cursor, 'more': page.more}
+        """Every retained job, with its items and uncleared failures (DESIGN 5.8)."""
+        return {'jobs': await rt.db(lambda store: store.list_jobs())}
 
     @app.get('/jobs/{job_id}', summary='One job')
-    async def get_job(
-        job_id: str, rt: service,
-        since: Annotated[int | None, Query(ge=0, description="Wait for the job's view revision to pass this.")] = None,
-        wait: Annotated[float, Query(ge=0, description='Seconds to wait for a change; capped.')] = 0,
-    ) -> Body:
-        """One job with its items and ``view_revision``; with ``since``, waits for a change (DESIGN 5.10).
+    async def get_job(job_id: str, rt: service) -> Body:
+        """One job with its items and uncleared failures; poll this to follow it (DESIGN 5.10).
 
-        404 once the job has left the status table; its tombstone reaches callers through the feed.
+        404 for an unknown job and for one past its retention.
         """
-        if since is None:
-            view = await rt.db(lambda store: store.job_view(job_id))
-        else:
-            view = await rt.notifier.long_poll(
-                lambda: rt.db(lambda store: store.job_view(job_id)),
-                lambda current: current is None or current.revision > since, min(wait, rt.settings.max_wait),
-            )
-        if view is None:
+        job = await rt.db(lambda store: store.get_job(job_id))
+        if job is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, f'Unknown job {job_id}')
-        return {**view.job, 'view_revision': view.revision}
+        return job
 
     @app.get('/failures', summary='Uncleared failures')
     async def list_failures(rt: service) -> Body:
-        """Every uncleared failure, oldest first, with the revision they were read at (DESIGN 5.9, C38)."""
-        snapshot = await rt.db(lambda store: store.failures_snapshot())
-        return {'failures': list(snapshot.records), 'revision': snapshot.revision}
+        """Every uncleared failure, oldest first: the place to check errored tasks (DESIGN 5.9)."""
+        return {'failures': await rt.db(lambda store: store.list_failures())}
 
     @app.delete('/failures', summary='Clear all failures')
     async def clear_failures(rt: service) -> Body:
         """Clear every failure and return the cleared records."""
-        cleared = await rt.db(lambda store: store.clear_failures())
-        if cleared:
-            rt.notifier.notify()
-        return {'failures': cleared}
+        return {'failures': await rt.db(lambda store: store.clear_failures())}
 
     @app.delete('/failures/{failure_id}', summary='Clear one failure')
     async def clear_failure(failure_id: str, rt: service) -> Body:
@@ -336,14 +254,13 @@ def create_app(
         cleared = await rt.db(lambda store: store.clear_failure(failure_id))
         if cleared is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, f'Unknown failure {failure_id}')
-        rt.notifier.notify()
         return cleared
 
     @app.get('/health', summary='Service health', responses={503: {'description': 'Unhealthy; same body.'}})
     async def health(rt: service) -> JSONResponse:
-        """Database, staging marker, thread liveness and yt-dlp version, without contacting YouTube (5.14).
+        """Database, staging marker, worker liveness and yt-dlp version, without contacting YouTube (5.14).
 
-        The staging result is the reconciler's cached check with its age, so this never touches the
+        The staging result is the worker's cached check with its age, so this never touches the
         share (C25). 200 when healthy, 503 otherwise, with the same body.
         """
         database_error = None
@@ -351,11 +268,11 @@ def create_app(
             await asyncio.wait_for(rt.db(lambda store: store.check()), 5)
         except (sqlite3.Error, TimeoutError) as error:
             database_error = str(error) or type(error).__name__
-        check = rt.reconciler.staging_check()
+        check = rt.worker.staging_check()
         age = None if check is None else rt.components.monotonic() - check.checked_at
         staging_ok = check is not None and check.marker_present and age is not None \
             and age <= rt.settings.staging_health_max_age
-        threads = {'worker': rt.worker_thread.is_alive(), 'reconciler': rt.reconcile_thread.is_alive()}
+        threads = {'worker': rt.worker_thread.is_alive()}
         healthy = database_error is None and staging_ok and all(threads.values())
         body = {
             'healthy': healthy,
