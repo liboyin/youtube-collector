@@ -36,7 +36,7 @@ Probe: on a temporary initialized Store, install a SQLite authorizer that return
 
 **Recommendation:** cover transaction finalization in the exception-safety contract, inspect whether a transaction remains active, and roll back or discard an unusable connection while preserving the original error. Account for SQLite failures that have already rolled back automatically. Test body failure, commit failure and cleanup failure separately. Fixing F1 without this can leave recovery trying repeatedly on a poisoned connection.
 
-Disposition: [T36](tasks/open/T36.md) records the proposed focused reliability fix; not implemented.
+Disposition: [T36](tasks/closed/T36.md) records the proposed focused reliability fix; not implemented.
 
 ### F3 — Medium: shutdown has an unbounded API-database tail
 

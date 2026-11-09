@@ -10,10 +10,11 @@ another thread raises instead of corrupting a transaction.
 """
 
 import json
+import logging
 import sqlite3
 import uuid
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -27,6 +28,8 @@ __all__ = [
     'SCHEMA_VERSION', 'CaptionsOutcome', 'ItemResult', 'ItemState', 'JobKind', 'JobState', 'MediaOutcome',
     'NewFailure', 'Phase', 'PlaylistEntry', 'Store', 'TargetType', 'TrackKind', 'WorkItem', 'WorkUnit', 'initialize',
 ]
+
+logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 2
 _BUSY_TIMEOUT_SECONDS = 30.0
@@ -316,17 +319,38 @@ class Store:
 
     def __init__(self, path: Path, clock: Callable[[], float]) -> None:
         """Open the connection; ``initialize`` must have created the schema."""
+        self._path = path
         self._clock = clock
-        self._connection = sqlite3.connect(path, timeout=_BUSY_TIMEOUT_SECONDS, autocommit=True)
-        self._connection.row_factory = sqlite3.Row
-        version = self._connection.execute('PRAGMA user_version').fetchone()[0]
-        if version != SCHEMA_VERSION:
-            self._connection.close()
-            raise RuntimeError(f'Database {path} has schema version {version}, expected {SCHEMA_VERSION}')
+        self._connection: sqlite3.Connection | None = self._connect()
+
+    def _connect(self) -> sqlite3.Connection:
+        """Open and check a connection to the database.
+
+        Raises:
+            RuntimeError: If the file holds a different schema version.
+            sqlite3.Error: If the database cannot be opened or read.
+        """
+        connection = sqlite3.connect(self._path, timeout=_BUSY_TIMEOUT_SECONDS, autocommit=True)
+        try:
+            connection.row_factory = sqlite3.Row
+            version = connection.execute('PRAGMA user_version').fetchone()[0]
+            if version != SCHEMA_VERSION:
+                raise RuntimeError(f'Database {self._path} has schema version {version}, expected {SCHEMA_VERSION}')
+        except BaseException:
+            connection.close()
+            raise
+        return connection
+
+    def _connected(self) -> sqlite3.Connection:
+        """Return the connection, opening a replacement if a failed cleanup discarded the last one."""
+        if self._connection is None:
+            self._connection = self._connect()
+        return self._connection
 
     def close(self) -> None:
-        """Close the connection."""
-        self._connection.close()
+        """Close the connection, if a failed cleanup has not already discarded it."""
+        if self._connection is not None:
+            self._connection.close()
 
     def __enter__(self) -> Self:
         """Return the store, which closes on exit."""
@@ -341,24 +365,47 @@ class Store:
     # Transactions
 
     @contextmanager
-    def _write(self) -> Iterator[sqlite3.Connection]:
-        """Run the body as one immediate write transaction, rolled back if it raises."""
-        self._connection.execute('BEGIN IMMEDIATE')
-        try:
-            yield self._connection
-        except BaseException:
-            self._connection.execute('ROLLBACK')
-            raise
-        self._connection.execute('COMMIT')
+    def _transaction(self, begin: str) -> Iterator[sqlite3.Connection]:
+        """Run the body as one transaction that commits, or ends without keeping the connection stuck in it.
 
-    @contextmanager
-    def _read(self) -> Iterator[sqlite3.Connection]:
-        """Run the body as one read transaction, so every statement sees the same snapshot."""
-        self._connection.execute('BEGIN')
+        The caller sees the error that ended the transaction, whether the body or ``COMMIT`` raised
+        it, so a result is reported only once it has committed.
+
+        Args:
+            begin: The statement that starts the transaction.
+        """
+        connection = self._connected()
+        connection.execute(begin)
         try:
-            yield self._connection
-        finally:
-            self._connection.execute('COMMIT')
+            yield connection
+            connection.execute('COMMIT')
+        except BaseException:
+            self._end_failed_transaction(connection)
+            raise
+
+    def _end_failed_transaction(self, connection: sqlite3.Connection) -> None:
+        """Roll back whatever a failure left open, replacing the connection if that fails too.
+
+        SQLite rolls some failures back by itself, so ``ROLLBACK`` runs only if a transaction is
+        still open. A cleanup error is logged instead of raised, because the caller needs the error
+        that ended the transaction. Closing discards the open transaction; the next operation opens
+        a replacement, since the database may still be unavailable now.
+        """
+        try:
+            if connection.in_transaction:
+                connection.execute('ROLLBACK')
+        except sqlite3.Error:
+            logger.exception('Rolling back a failed transaction failed; replacing the database connection')
+            self._connection = None
+            connection.close()
+
+    def _write(self) -> AbstractContextManager[sqlite3.Connection]:
+        """Run the body as one immediate write transaction."""
+        return self._transaction('BEGIN IMMEDIATE')
+
+    def _read(self) -> AbstractContextManager[sqlite3.Connection]:
+        """Run the body as one read transaction, so every statement sees the same snapshot."""
+        return self._transaction('BEGIN')
 
     def check(self) -> None:
         """Check that the database is readable and writable, for ``/health`` (DESIGN 5.14).
@@ -440,7 +487,7 @@ class Store:
 
     def list_failures(self) -> list[Record]:
         """Return every uncleared failure, oldest first."""
-        return [_failure_record(row) for row in self._connection.execute('SELECT * FROM failures ORDER BY seq')]
+        return [_failure_record(row) for row in self._connected().execute('SELECT * FROM failures ORDER BY seq')]
 
     @staticmethod
     def _job_record(connection: sqlite3.Connection, job_id: str) -> Record:

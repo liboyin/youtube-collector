@@ -198,6 +198,123 @@ def test_check_passes_on_a_writable_database_and_changes_nothing(store):
     assert store.list_jobs() == [job]
 
 
+def deny_once(store, *statements):
+    """Make SQLite refuse the next COMMIT or ROLLBACK on the store's connection, once each."""
+    remaining = set(statements)
+
+    def authorize(action, argument, *_):
+        if action == sqlite3.SQLITE_TRANSACTION and argument in remaining:
+            remaining.remove(argument)
+            return sqlite3.SQLITE_DENY
+        return sqlite3.SQLITE_OK
+
+    store._connection.set_authorizer(authorize)
+
+
+@pytest.mark.parametrize('operation', [
+    pytest.param(lambda store: store.check(), id='write'),
+    pytest.param(lambda store: store.get_job('unknown'), id='read'),
+])
+def test_a_refused_commit_raises_and_leaves_the_connection_usable(store, operation):
+    """COMMIT failing ends the transaction, so the next operation can begin one."""
+    deny_once(store, 'COMMIT')
+    with pytest.raises(sqlite3.DatabaseError, match='not authorized'):
+        operation(store)
+    assert not store._connection.in_transaction
+    store.check()
+
+
+def test_a_refused_commit_keeps_nothing_and_acknowledges_nothing(store, db_path):
+    """A job whose COMMIT failed is not returned and is not in the database."""
+    deny_once(store, 'COMMIT')
+    with pytest.raises(sqlite3.DatabaseError):
+        submit_video(store)
+    assert count_rows(db_path, 'jobs') == 0
+    assert submit_video(store)['state'] == 'queued'
+    assert count_rows(db_path, 'jobs') == 1
+
+
+def test_an_error_in_a_read_is_raised_and_ends_the_transaction(store):
+    """A read body's error reaches the caller with no transaction left open."""
+    with pytest.raises(ValueError, match='body'), store._read():
+        raise ValueError('body')
+    assert not store._connection.in_transaction
+    store.check()
+
+
+def test_a_transaction_sqlite_already_rolled_back_keeps_the_original_error(store):
+    """No ROLLBACK is tried when none is open, so a healthy connection is neither blamed nor replaced."""
+    original = store._connection
+    with pytest.raises(ValueError, match='body'), store._write() as connection:
+        connection.execute('ROLLBACK')
+        raise ValueError('body')
+    assert store._connection is original
+    store.check()
+
+
+def test_commit_finding_no_transaction_raises_its_own_error(store):
+    """A body that lost its transaction is reported, not acknowledged."""
+    with pytest.raises(sqlite3.OperationalError, match='cannot commit'), store._write() as connection:
+        connection.execute('ROLLBACK')
+    store.check()
+
+
+def test_a_failed_rollback_keeps_the_original_error_and_replaces_the_connection(store, db_path, caplog):
+    """When cleanup fails too, the caller sees the first error and uncommitted work is discarded."""
+    original = store._connection
+    deny_once(store, 'ROLLBACK')
+    with pytest.raises(ValueError, match='body'), store._write() as connection:
+        connection.execute(
+            "INSERT INTO jobs (id, kind, url, target_type, target_id, state, created_at, updated_at)"
+            " VALUES ('uncommitted', 'videos', 'u', 'video', 'v', 'queued', 0, 0)"
+        )
+        raise ValueError('body')
+    assert 'replacing the database connection' in caplog.text
+    assert count_rows(db_path, 'jobs') == 0  # the discarded connection no longer holds the write lock
+    assert submit_video(store)['state'] == 'queued'
+    assert store._connection is not original
+    with pytest.raises(sqlite3.ProgrammingError):
+        original.execute('SELECT 1')
+
+
+def test_a_failed_commit_and_rollback_acknowledge_nothing(store, db_path):
+    """COMMIT and its cleanup both failing raises, keeps nothing and leaves the store working."""
+    deny_once(store, 'COMMIT', 'ROLLBACK')
+    with pytest.raises(sqlite3.DatabaseError, match='not authorized'):
+        submit_video(store)
+    assert count_rows(db_path, 'jobs') == 0
+    store.check()
+
+
+def test_a_replacement_connection_that_cannot_open_is_tried_again(store):
+    """An unavailable database fails that operation only; a later one opens the replacement."""
+    deny_once(store, 'ROLLBACK')
+    with pytest.raises(ValueError, match='body'), store._write():
+        raise ValueError('body')
+    with patch.object(testee.sqlite3, 'connect', side_effect=sqlite3.OperationalError('unavailable')), \
+            pytest.raises(sqlite3.OperationalError, match='unavailable'):
+        store.check()
+    store.check()
+
+
+def test_listing_failures_uses_the_replacement_connection(store):
+    """The one query outside a transaction also survives a discarded connection."""
+    deny_once(store, 'ROLLBACK')
+    with pytest.raises(ValueError, match='body'), store._write():
+        raise ValueError('body')
+    assert store.list_failures() == []
+
+
+def test_a_discarded_connection_needs_no_closing(db_path, clock):
+    """Closing a store whose connection was discarded does nothing and raises nothing."""
+    store = testee.Store(db_path, clock)
+    deny_once(store, 'ROLLBACK')
+    with pytest.raises(ValueError, match='body'), store._write():
+        raise ValueError('body')
+    store.close()
+    assert store._connection is None
+
+
 def test_check_fails_while_another_connection_holds_the_write_lock(db_path, clock):
     """A database that cannot be locked for writing fails the check."""
     other = sqlite3.connect(db_path, timeout=0, autocommit=True)
