@@ -224,6 +224,10 @@ On startup, items left `running` return to `queued`, and a job interrupted durin
 
 On SIGTERM the worker stops taking items and lets the current yt-dlp call finish, abandoning it when the shutdown grace period ends; the interrupted item is then recovered by the rule above on the next start (decision C36). The grace period is an implementation default.
 
+Shutdown policy (C50): normal operation should shut down gracefully, but exceptional stalls may require Docker to forcibly terminate the container after its configured stop grace. The worker join timeout bounds waiting, not execution: it does not cancel the worker's current I/O. API database executor cleanup is currently unbounded, so the application does not guarantee graceful process exit within the container grace. [T37](tasks/open/T37.md) will align operating guidance and comments with this policy and add process-level shutdown and restart-recovery validation. Stronger application-enforced termination, worker subprocess isolation and a larger grace period are not required by this decision. Forced termination can leave private stage directories for manual cleanup (C46); restart recovery and no-overwrite publication remain required.
+
+Planned, not yet implemented (C48): automatically recover from infrastructure/persistence failures that otherwise leave an item `running` or a job `expanding` after the worker has abandoned that unit. The user wants this improvement but does not consider it urgent; [T35](tasks/open/T35.md) owns it. This does not authorize automatic retry of completed failed YouTube jobs. The implementation must distinguish recovering persistence from repeating acquisition, preserve no-overwrite behavior, and restore a usable database connection before resuming work.
+
 ### 5.13 Staging availability
 
 An unmounted SMB share can look like an empty directory, and downloads would then be written into the container instead of the share. The staging root MUST therefore contain a marker file, `.youtube-collector-root`, which the user creates once.
@@ -406,9 +410,17 @@ Decisions on the 2026-11-08 architecture review (`architecture-2026-11-08.md` at
 
 P4 (running the reconciler as a coroutine or a subprocess) was rejected by the review and is moot under C40.
 
+Decisions following the [2026-11-10 project review](project-review-2026-11-10.md), made by the user:
+
+| ID | Decision |
+|---|---|
+| C48 | Automatic recovery from infrastructure/persistence failures is desired but not urgent; T35 tracks this planned addition to restart recovery. It does not add automatic retry of completed failed YouTube jobs. The recovery mechanism remains to be designed before implementation. |
+| C49 | Firefox cookies being unavailable to caption acquisition is an issue to fix; T39 tracks authenticated caption acquisition. Backend choice remains open, and existing language selection, translation exclusion, timeout and outcome contracts remain unless explicitly superseded. |
+| C50 | Retain graceful shutdown for normal operation and accept Docker-enforced termination for exceptional stalls. T37 will correct shutdown claims and validate process exit/escalation and restart recovery. This clarifies C36: the worker grace bounds waiting, not cancellation or total application shutdown; it does not require stronger in-process termination or a change to the current grace periods. |
+
 ## 12. Open questions
 
-No open questions remain. The 2026-11-07 review raised Q1–Q6, settled as C33–C38 (section 11); the analysis behind C38 is in this file at revision `2362807`.
+The 2026-11-07 review raised Q1–Q6, settled as C33–C38 (section 11); the analysis behind C38 is in this file at revision `2362807`. The 2026-11-10 review leaves implementation choices for automatic infrastructure recovery ([T35](tasks/open/T35.md)) and authenticated caption acquisition ([T39](tasks/open/T39.md)). C48 and C49 settle the desired capabilities, not their mechanisms. C50 settles the shutdown policy; [T37](tasks/open/T37.md) owns its documentation and validation work.
 
 ## 13. Assumptions
 
