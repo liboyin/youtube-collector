@@ -195,6 +195,11 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        """Build the components and run the worker for the application's lifetime.
+
+        Once the worker thread exists it owns releasing the components; this releases them only if the
+        runtime cannot be built.
+        """
         components = components_factory(settings)
         try:
             runtime = _Runtime(settings, components)
