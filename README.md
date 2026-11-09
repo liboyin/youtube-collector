@@ -2,7 +2,7 @@
 
 Download YouTube videos, playlists, and captions into a staging area, as a LAN-only HTTP service. [DESIGN.md](DESIGN.md) owns the requirements and design; [tasks/TODO.md](tasks/TODO.md) owns outstanding work; [AGENTS.md](AGENTS.md) owns working standards.
 
-**Status:** the service is implemented and tested against fakes: the HTTP API and the YouTube worker thread run in one process ([DESIGN section 14](DESIGN.md#14-architecture)). It has not yet been run against real YouTube (task [T25](tasks/open/T25.md)), and the container-level checks are listed in task [T10](tasks/open/T10.md). The sections below cover building, configuring, running and testing it.
+**Status:** the service is implemented and tested against fakes: the HTTP API and the YouTube worker thread run in one process ([DESIGN section 14](DESIGN.md#14-architecture)). Against real YouTube it has so far run only from the dev container and without cookies, for media and manual-track caption jobs; the real staging share is still unverified (task [T25](tasks/open/T25.md)), and the container-level checks are listed in task [T10](tasks/open/T10.md). The sections below cover building, configuring, running and testing it.
 
 ## Security / trust model
 
