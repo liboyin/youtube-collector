@@ -8,7 +8,7 @@ Dependencies govern execution. A recorded task is not permission to combine unre
 
 T25 needs the user's authorization for a run against real YouTube; T10 collects host checks as tasks land; T34 follows T25 and the user's orchestrator design; T14 waits for its revisit trigger.
 
-T36 restores transaction exception safety before T35 adds automatic infrastructure recovery; the user considers T35 non-urgent. T37 documents and validates C50's graceful shutdown with Docker termination fallback, and T38 must respect the worker lifetime when closing caption resources. T39 requires a backend decision before implementation; coordinate its client ownership with T38 if they overlap. Hard-link validation stays in T25; no separate task is needed.
+T36 restores transaction exception safety, which T35 will rely on; the user deferred T35 (C51). T37 documents and validates C50's graceful shutdown with Docker termination fallback, and T38 must respect the worker lifetime when closing caption resources. T39 is deferred until a real run with cookies, authorized under T25, informs its backend choice (C52); coordinate its client ownership with T38 if they overlap. Hard-link validation stays in T25; no separate task is needed.
 
 ## Shared constraints
 
@@ -22,8 +22,8 @@ Application modules live in `youtube_collector/`, one module per responsibility,
 - [T14](open/T14.md) — Low, deferred. Let COVERAGE_THRESHOLD lower the coverage gate.
 - [T25](open/T25.md) — Low. First end-to-end run against real YouTube.
 - [T34](open/T34.md) — Medium, blocked on the user's orchestrator design. Integrate the orchestrator with the collector.
-- [T35](open/T35.md) — Low priority, non-urgent; High review severity. Automatically recover work stranded by persistence failures.
+- [T35](open/T35.md) — Low, deferred; High review severity. Automatically recover work stranded by persistence failures.
 - [T36](open/T36.md) — Medium. Restore transaction exception safety after COMMIT failure.
 - [T37](open/T37.md) — Medium. Document and validate graceful shutdown with Docker termination fallback.
 - [T38](open/T38.md) — Low. Give the caption HTTP session explicit lifecycle ownership.
-- [T39](open/T39.md) — Medium. Make configured Firefox authentication available to caption acquisition.
+- [T39](open/T39.md) — Medium, deferred until a run with cookies. Make configured Firefox authentication available to caption acquisition.

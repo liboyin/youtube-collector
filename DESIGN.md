@@ -417,10 +417,12 @@ Decisions following the [2026-11-10 project review](project-review-2026-11-10.md
 | C48 | Automatic recovery from infrastructure/persistence failures is desired but not urgent; T35 tracks this planned addition to restart recovery. It does not add automatic retry of completed failed YouTube jobs. The recovery mechanism remains to be designed before implementation. |
 | C49 | Firefox cookies being unavailable to caption acquisition is an issue to fix; T39 tracks authenticated caption acquisition. Backend choice remains open, and existing language selection, translation exclusion, timeout and outcome contracts remain unless explicitly superseded. |
 | C50 | Retain graceful shutdown for normal operation and accept Docker-enforced termination for exceptional stalls. T37 will correct shutdown claims and validate process exit/escalation and restart recovery. This clarifies C36: the worker grace bounds waiting, not cancellation or total application shutdown; it does not require stronger in-process termination or a change to the current grace periods. |
+| C51 | T35 is deferred: its mechanism stays undecided and a stranded unit still needs a manual restart. C48 still records the desired capability. Revisit when the user asks or a stranded unit is observed in operation. |
+| C52 | T39's backend is chosen only after a real run with cookies, authorized by the user under T25, because no candidate can be verified offline. C49 still records the desired capability; captions remain unauthenticated until then. |
 
 ## 12. Open questions
 
-The 2026-11-07 review raised Q1–Q6, settled as C33–C38 (section 11); the analysis behind C38 is in this file at revision `2362807`. The 2026-11-10 review leaves implementation choices for automatic infrastructure recovery ([T35](tasks/open/T35.md)) and authenticated caption acquisition ([T39](tasks/open/T39.md)). C48 and C49 settle the desired capabilities, not their mechanisms. C50 settles the shutdown policy; [T37](tasks/open/T37.md) owns its documentation and validation work.
+The 2026-11-07 review raised Q1–Q6, settled as C33–C38 (section 11); the analysis behind C38 is in this file at revision `2362807`. The 2026-11-10 review leaves implementation choices for automatic infrastructure recovery ([T35](tasks/open/T35.md)) and authenticated caption acquisition ([T39](tasks/open/T39.md)). C48 and C49 settle the desired capabilities, not their mechanisms. C51 and C52 defer both choices. C50 settles the shutdown policy; [T37](tasks/open/T37.md) owns its documentation and validation work.
 
 ## 13. Assumptions
 
