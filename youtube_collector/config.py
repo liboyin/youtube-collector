@@ -35,8 +35,8 @@ class Settings:
         port: The HTTP port inside the container (``COLLECTOR_PORT``).
         staging_health_max_age: The age beyond which a cached staging check counts as unhealthy; an
             implementation default (decision C35).
-        shutdown_grace: How long shutdown waits for the current yt-dlp call before abandoning it
-            (decision C36; ``COLLECTOR_SHUTDOWN_GRACE``).
+        shutdown_grace: How long shutdown waits for the worker's current unit before abandoning it, which
+            does not stop it (decisions C36 and C50; ``COLLECTOR_SHUTDOWN_GRACE``).
     """
 
     staging_dir: Path

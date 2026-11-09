@@ -20,7 +20,7 @@
 ## Threads, servers and asynchronous work
 
 - Shared asynchronous resources and process-global doubles need per-test ownership, synchronized access, cancellation, quiescence and local accounting for late work. These guarantees hold after timeouts and failures too: a completion signal alone does not prove that callbacks or background work have stopped.
-- Start background threads with the `owned_threads` fixture and loopback servers with `loopback_server`, both in `tests/conftest.py`. Their teardown stops and joins everything within a bound, also after a failure, including a server's request handlers, and fails the test if anything survives. Where a fixture cannot own a thread, such as one the application's own lifespan starts, stop and join it in a `finally` and assert that it is not alive.
+- Start background threads with the `owned_threads` fixture and loopback servers with `loopback_server`, both in `tests/conftest.py`. Their teardown stops and joins everything within a bound, also after a failure, including a server's request handlers, and fails the test if anything survives. Where a fixture cannot own a thread, such as one the application's own lifespan starts, stop and join it in a `finally` and assert that it is not alive. Tests that need a real service process use the `lifecycle` fixture in `tests/test_main.py`, whose teardown kills and reaps every child.
 - Tests run in random order under `pytest-randomly`, so order-dependent state is a defect, not a flake.
 
 ## Time

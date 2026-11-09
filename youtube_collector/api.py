@@ -146,10 +146,12 @@ class _Runtime:
         self.worker_thread.start()
 
     def stop(self) -> None:
-        """Stop the worker within the shutdown grace, then close the API's database thread.
+        """Ask the worker to stop, wait up to the shutdown grace for it, then close the API's database thread.
 
-        The worker finishes its current unit; if a yt-dlp call outlasts the grace, it is abandoned
-        and restart recovery requeues the item (decision C36).
+        The grace bounds waiting, not execution: a worker still busy when it ends is abandoned and keeps
+        running until the process exits, and restart recovery requeues its item (decisions C36 and C50).
+        Closing the database thread waits without a bound for any operation running on it, so a stalled
+        operation can keep the process alive until the container's forced termination (decision C50).
         """
         self.worker.stop()
         self.worker_thread.join(self.settings.shutdown_grace)

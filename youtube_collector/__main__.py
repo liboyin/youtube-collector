@@ -3,7 +3,8 @@
 One uvicorn process serves the API and runs the worker thread; it must never
 run several server processes, because the worker and its cached staging check are in-process. Settings come from the
 environment (``config.Settings``). On SIGTERM uvicorn stops serving, and the application's lifespan
-stops the thread within the shutdown grace (decision C36).
+stops the worker, waiting up to the shutdown grace for it. Normal shutdowns finish there; an exceptional
+stall may last until Docker kills the container after its stop grace (decision C50).
 """
 
 import logging
@@ -17,8 +18,8 @@ from youtube_collector.config import Settings
 
 __all__ = ['main']
 
-# How long uvicorn lets open requests finish after SIGTERM before the
-# application's own shutdown begins.
+# How long uvicorn lets open requests finish after SIGTERM before cancelling them and starting the
+# application's own shutdown. Cancelling a request does not stop database work already running for it.
 REQUEST_SHUTDOWN_SECONDS = 5
 
 

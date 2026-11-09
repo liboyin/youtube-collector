@@ -46,7 +46,7 @@ Consequently the [Compose](docker-compose.yaml) comment that 45 seconds prevents
 
 **Recommendation:** add a subprocess-level shutdown test with owned temporary storage and controlled blocking. Establish one overall shutdown budget, including the API database work, and document Docker's final kill as a fallback. Merely adding a timeout to `result()` does not terminate an executor thread. A fully bounded in-process shutdown may require a larger ownership change than the service warrants.
 
-**Accepted disposition (C50):** retain graceful shutdown for normal operation and accept container-enforced termination for exceptional stalls. [T37](tasks/open/T37.md) records the documentation corrections and process-level shutdown/restart tests needed to validate that policy. Stronger application-enforced termination is not required.
+**Accepted disposition (C50):** retain graceful shutdown for normal operation and accept container-enforced termination for exceptional stalls. [T37](tasks/closed/T37.md) records the documentation corrections and process-level shutdown/restart tests needed to validate that policy. Stronger application-enforced termination is not required.
 
 ### F4 — Low: caption HTTP session ownership is implicit
 

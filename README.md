@@ -44,7 +44,7 @@ The service reads its **runtime settings** from the environment; `docker-compose
 | `COLLECTOR_MAX_SLEEP_DOWNLOAD` | unset | The upper bound of that range. |
 | `COLLECTOR_JOB_RETENTION_DAYS` | `7` | Days a finished job stays readable. Expired jobs are deleted when the next job is submitted. |
 | `COLLECTOR_HOST`, `COLLECTOR_PORT` | `0.0.0.0`, `8000` | Where the server listens inside the container; Compose does not pass these through. |
-| `COLLECTOR_SHUTDOWN_GRACE` | `30` | Seconds shutdown waits for the current download before abandoning it; restart recovery requeues it. Compose does not pass it through: the service's `stop_grace_period` (45 s) must stay above it plus 5 s, so change both in `docker-compose.yaml` together. |
+| `COLLECTOR_SHUTDOWN_GRACE` | `30` | Seconds shutdown waits for the current download before abandoning it; the wait does not stop the download, which ends with the process, and restart recovery requeues it. Compose does not pass it through: keep the service's `stop_grace_period` (45 s) above it plus 5 s so that normal shutdowns finish first, and change both in `docker-compose.yaml` together. |
 
 ## Running the service
 
@@ -56,7 +56,7 @@ docker compose up -d
 curl http://localhost:8000/health   # 200 when the database, staging marker and worker are healthy, 503 otherwise
 ```
 
-The interactive API documentation is at `http://<host>:8000/docs`. Submit work with `POST /jobs/videos`, `/jobs/captions` or `/jobs/videos-with-captions`, follow it by polling `GET /jobs/{id}`, and check errored tasks with `GET /failures`; [DESIGN section 6](DESIGN.md#6-http-api-summary) lists every endpoint. A running service downloads from YouTube with your cookies, so starting it is your decision; agents need your authorization for each run ([AGENTS.md](AGENTS.md#safety)). `docker compose stop` lets the current download finish for up to 30 seconds; an abandoned download restarts from scratch on the next start.
+The interactive API documentation is at `http://<host>:8000/docs`. Submit work with `POST /jobs/videos`, `/jobs/captions` or `/jobs/videos-with-captions`, follow it by polling `GET /jobs/{id}`, and check errored tasks with `GET /failures`; [DESIGN section 6](DESIGN.md#6-http-api-summary) lists every endpoint. A running service downloads from YouTube with your cookies, so starting it is your decision; agents need your authorization for each run ([AGENTS.md](AGENTS.md#safety)). `docker compose stop` gives open requests up to 5 seconds and then lets the current download finish for up to 30 seconds; an abandoned download restarts from scratch on the next start. This is a graceful shutdown for normal operation, not a guarantee: an exceptional stall, such as a blocked database operation, can keep the process alive until Docker kills it after the 45-second stop grace. Restart recovery still applies, and a killed download can leave a hidden `.staging-*` directory on the share for manual cleanup ([DESIGN 5.12](DESIGN.md#512-restart-recovery)).
 
 ## Updating dependencies
 

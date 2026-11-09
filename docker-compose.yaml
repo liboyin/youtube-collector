@@ -37,8 +37,10 @@ services:
     ports:
       - "${COLLECTOR_PORT:-8000}:8000"
     restart: unless-stopped
-    # Longer than uvicorn's 5 s for open requests plus the service's 30 s grace for the current
-    # download, so SIGKILL never cuts a shutdown short (decision C36).
+    # Longer than uvicorn's 5 s for open requests plus the service's 30 s wait for the current
+    # download, so a normal shutdown finishes first. An exceptional stall, such as a blocked database
+    # operation, can outlast it; Docker's SIGKILL then ends the service and restart recovery applies
+    # (decision C50).
     stop_grace_period: 45s
     #
     # These are the production mounts. The dev container replaces all of them with
