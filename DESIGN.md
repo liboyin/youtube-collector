@@ -148,7 +148,33 @@ In a `captions` item, the captions are the whole purpose, so a caption-service e
 
 A requested artifact's outcome stays null when the item fails before that outcome is determined. An outcome already determined is kept: an artifact found `existing` before the failure stays `existing`. So when the destination directory cannot be listed, both outcomes stay null; when the metadata request fails, every outcome not already `existing` stays null; when media fails, the captions outcome stays null unless the captions already existed. Such an item is `failed`, and its failure record names the phase (5.9). Clients therefore treat a null outcome on a `failed` item as "not attempted"; on a `queued` or `running` item it means "not yet known".
 
-Item states are `queued`, `running`, `done` and `failed`. A failure in one item never stops the remaining items of its job (decision D17 at the source revision). Job states are `queued`, `expanding`, `running` and `finished`; a job whose playlist expansion fails becomes `finished` with no items and a failure record.
+Items and jobs move through these states, which the API reports:
+
+```text
+Item:               queued → running → done | failed
+
+Job, single video:  queued → running → finished
+Job, playlist:      queued → expanding → running → finished
+Job, playlist:      queued → expanding → finished    (expansion failed, or the playlist is empty)
+```
+
+| Record | Transition | When |
+|---|---|---|
+| Item | created as `queued` | With its job for a single video; when expansion succeeds for a playlist |
+| Item | `queued` → `running` | The worker starts the item |
+| Item | `running` → `done` or `failed` | The item ends, as described above |
+| Item | `running` → `queued` | The service restarts while the item runs (5.12) |
+| Job | created as `queued` | The submission is accepted |
+| Job | `queued` → `expanding` | The worker starts expanding a playlist |
+| Job | `expanding` → `running` | Expansion succeeds with at least one entry |
+| Job | `expanding` → `finished` | Expansion fails, which leaves no items and a failure record, or the playlist is empty |
+| Job | `expanding` → `queued` | The service restarts during expansion (5.12) |
+| Job | `queued` → `running` | A single-video job's item starts |
+| Job | `running` → `finished` | No item of the job is still `queued` or `running` |
+
+A job left `running` by a restart stays `running` while its requeued item waits. Pausing for staging availability changes no state (5.13).
+
+`finished` means work on the job has stopped, not that it succeeded: a `finished` job can contain `failed` items, and a `done` item can carry a failure record when its captions end in `error`. A failure in one item never stops the remaining items of its job (decision D17 at the source revision).
 
 ### 5.8 Status table and retention
 
