@@ -159,12 +159,16 @@ class Worker[T: Track]:
         idle_wait: How long to wait for a wake-up when there is no work.
         pause_wait: How long to wait before checking the staging marker again while paused.
         error_wait: How long to wait after an unexpected error before trying again.
+        on_stopped: Called on the worker thread when ``run`` ends, however it ends, to release what the
+            adapters hold. An abandoned worker calls it only when it finally finishes, so nothing it
+            still uses can be released under it.
     """
 
     def __init__(
         self, *, open_store: Callable[[], Store], staging_root: Path, media: MediaSource, captions: CaptionSource[T],
         monotonic: Callable[[], float], marker_check_interval: float = 30.0,
         idle_wait: float = 30.0, pause_wait: float = 5.0, error_wait: float = 5.0,
+        on_stopped: Callable[[], None] = lambda: None,
     ) -> None:
         """Store the collaborators; nothing runs until ``run``."""
         self._open_store = open_store
@@ -176,6 +180,7 @@ class Worker[T: Track]:
         self._idle_wait = idle_wait
         self._pause_wait = pause_wait
         self._error_wait = error_wait
+        self._on_stopped = on_stopped
         self._cursor = 0
         self._paused = False
         self._staging_check: StagingCheck | None = None
@@ -204,21 +209,25 @@ class Worker[T: Track]:
         """Run the worker loop until ``stop``: recover interrupted work, then take units one by one.
 
         Each step's unexpected error is logged and retried after ``error_wait``, so one bad unit
-        cannot kill the thread; the unit it interrupted is recovered at the next restart.
+        cannot kill the thread; the unit it interrupted is recovered at the next restart. ``on_stopped``
+        runs last, also if opening the store or recovery raises.
         """
-        with self._open_store() as store:
-            store.recover()
-            while not self._stopping.is_set():
-                try:
-                    step = self.step(store)
-                except Exception:
-                    logger.exception('Worker step failed')
-                    self._wait(self._error_wait)
-                    continue
-                if step is Step.PAUSED:
-                    self._wait(self._pause_wait)
-                elif step is Step.IDLE:
-                    self._wait(self._idle_wait)
+        try:
+            with self._open_store() as store:
+                store.recover()
+                while not self._stopping.is_set():
+                    try:
+                        step = self.step(store)
+                    except Exception:
+                        logger.exception('Worker step failed')
+                        self._wait(self._error_wait)
+                        continue
+                    if step is Step.PAUSED:
+                        self._wait(self._pause_wait)
+                    elif step is Step.IDLE:
+                        self._wait(self._idle_wait)
+        finally:
+            self._on_stopped()
 
     def _wait(self, timeout: float) -> None:
         """Wait for a wake-up, a stop or the timeout."""

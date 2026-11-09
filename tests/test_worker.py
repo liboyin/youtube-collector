@@ -2,6 +2,7 @@
 
 import logging
 import os
+import sqlite3
 import threading
 from dataclasses import dataclass
 
@@ -589,6 +590,36 @@ def test_run_recovers_processes_and_stops(worker, db, media, owned_threads):
     thread.join(10)
     assert not thread.is_alive()
     assert item_of(db, job)['state'] == 'done'
+
+
+def stoppable_worker(db_path, root, media, captions, clock, on_stopped, open_store=None):
+    """Return a worker that reports when its run ends."""
+    return testee.Worker(
+        open_store=open_store or (lambda: store.Store(db_path, lambda: 1_000_000.0)), staging_root=root, media=media,
+        captions=captions, monotonic=clock, idle_wait=60, pause_wait=60, error_wait=0, on_stopped=on_stopped,
+    )
+
+
+def test_on_stopped_runs_once_on_the_worker_thread_after_the_loop_ends(db_path, root, media, captions, clock):
+    """The release happens on the thread that used the adapters, after its last step."""
+    threads = []
+    worker = stoppable_worker(db_path, root, media, captions, clock, lambda: threads.append(threading.current_thread()))
+    worker.stop()
+    worker.run()
+    assert threads == [threading.current_thread()]
+
+
+def test_on_stopped_runs_when_the_worker_dies_during_recovery(db_path, root, media, captions, clock):
+    """A worker that never reaches its loop still releases what the adapters hold."""
+    released = []
+
+    def broken():
+        raise sqlite3.OperationalError('unavailable')
+
+    worker = stoppable_worker(db_path, root, media, captions, clock, lambda: released.append(1), open_store=broken)
+    with pytest.raises(sqlite3.OperationalError):
+        worker.run()
+    assert released == [1]
 
 
 def test_run_survives_a_failing_step(worker, caplog):

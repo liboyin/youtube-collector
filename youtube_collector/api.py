@@ -48,19 +48,24 @@ class Components:
         captions: The caption adapter.
         clock: Wall-clock epoch seconds.
         monotonic: A monotonic clock.
+        release: Frees what the adapters hold; runs once the worker has stopped, or if startup fails.
     """
 
     media: MediaSource
     captions: CaptionSource
     clock: Callable[[], float] = field(default=time.time)
     monotonic: Callable[[], float] = field(default=time.monotonic)
+    release: Callable[[], None] = field(default=lambda: None)
 
 
 def default_components(settings: Settings) -> Components:
     """Return the real adapters, detecting Firefox cookies once for the process (DESIGN 5.11)."""
     cookies = firefox_cookies_present(firefox_profile_roots(Path.home()))
     logger.info('Firefox cookies %s', 'found; yt-dlp will use them' if cookies else 'not found')
-    return Components(media=YoutubeClient(cookies=cookies, pacing=settings.pacing), captions=CaptionClient())
+    captions = CaptionClient()
+    return Components(
+        media=YoutubeClient(cookies=cookies, pacing=settings.pacing), captions=captions, release=captions.close,
+    )
 
 
 class _VideosRequest(BaseModel):
@@ -107,7 +112,7 @@ class _Runtime:
         initialize(settings.database)
         self.worker = Worker(
             open_store=self._open_store, staging_root=settings.staging_dir, media=components.media,
-            captions=components.captions, monotonic=components.monotonic,
+            captions=components.captions, monotonic=components.monotonic, on_stopped=components.release,
         )
         self.worker_thread = threading.Thread(target=self.worker.run, name='youtube-worker', daemon=True)
         self._local = threading.local()
@@ -142,8 +147,23 @@ class _Runtime:
         return await loop.run_in_executor(self._executor, lambda: operation(self._api_store()))
 
     def start(self) -> None:
-        """Start the worker thread."""
-        self.worker_thread.start()
+        """Start the worker thread, which from then on owns releasing the components.
+
+        ``Thread.start`` raises ``RuntimeError`` only when no thread exists, so only then is the release
+        done here. Any other interruption can arrive while the thread is already running, so the worker
+        is asked to stop and releases on its own thread as usual.
+
+        Raises:
+            RuntimeError: If the thread could not be created.
+        """
+        try:
+            self.worker_thread.start()
+        except RuntimeError:
+            self.components.release()
+            raise
+        except BaseException:
+            self.worker.stop()
+            raise
 
     def stop(self) -> None:
         """Ask the worker to stop, wait up to the shutdown grace for it, then close the API's database thread.
@@ -175,7 +195,12 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        runtime = _Runtime(settings, components_factory(settings))
+        components = components_factory(settings)
+        try:
+            runtime = _Runtime(settings, components)
+        except BaseException:
+            components.release()  # no worker exists to do it
+            raise
         runtime.start()
         app.state.runtime = runtime
         try:

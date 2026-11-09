@@ -54,7 +54,7 @@ Consequently the [Compose](docker-compose.yaml) comment that 45 seconds prevents
 
 For one process-lifetime client, process exit limits the practical cost. Repeated application lifespans or future adapter replacement would make resource lifetime less predictable. Retain explicit ownership of the default session and close it when the worker actually stops; do not close it concurrently with an abandoned worker still using it. This is housekeeping, not a reason to redesign the adapters.
 
-Disposition: [T38](tasks/open/T38.md) records the focused cleanup requested by the user.
+Disposition: [T38](tasks/closed/T38.md) records the focused cleanup requested by the user.
 
 ## Significant deployment and product trade-offs
 

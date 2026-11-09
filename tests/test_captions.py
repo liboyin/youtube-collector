@@ -46,6 +46,37 @@ class FakeApi:
         return self.tracks
 
 
+class FakeSession:
+    """Records whether it was closed; the real transcript client only sets a header on it here."""
+
+    def __init__(self):
+        """Start open."""
+        self.headers = {}
+        self.closed = 0
+
+    def close(self):
+        """Count the close."""
+        self.closed += 1
+
+
+def test_close_closes_the_session_the_client_created():
+    """The default session belongs to the client, so the client closes it."""
+    session = FakeSession()
+    with patch.object(testee, 'timeout_session', return_value=session):
+        client = testee.CaptionClient()
+    assert session.closed == 0
+    client.close()
+    assert session.closed == 1
+
+
+def test_close_leaves_an_injected_client_alone():
+    """An injected transcript client stays with whoever made it; no session is created for it."""
+    with patch.object(testee, 'timeout_session') as make_session:
+        client = testee.CaptionClient(FakeApi())
+        client.close()
+    make_session.assert_not_called()
+
+
 def test_timeout_adapter_applies_default_timeouts():
     """A request without a timeout gets 10 s to connect and 30 s of read silence (D38)."""
     with patch.object(HTTPAdapter, 'send', return_value='response') as send:

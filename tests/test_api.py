@@ -517,3 +517,121 @@ def test_shutdown_abandons_a_thread_that_outlasts_the_grace(settings, media, mon
         release.set()
         runtime.worker_thread.join(10)
     assert not runtime.worker_thread.is_alive()
+
+
+def test_default_components_release_closes_the_caption_session(settings):
+    """The real composition wires the release hook to the session the caption client created."""
+    with patch.object(testee, 'firefox_cookies_present', return_value=False), \
+            patch.object(testee, 'firefox_profile_roots', return_value=()), \
+            patch('youtube_collector.captions.timeout_session') as make_session:
+        components = testee.default_components(settings)
+    make_session.return_value.close.assert_not_called()
+    components.release()
+    make_session.return_value.close.assert_called_once_with()
+
+
+def client_with_release(settings, media, monotonic, release, captions=None):
+    """Return a TestClient whose components report their release."""
+    components = testee.Components(
+        media=media, captions=captions or FakeCaptions(), monotonic=monotonic, release=release,
+    )
+    return TestClient(testee.create_app(settings, lambda _settings: components))
+
+
+def test_repeated_lifespans_each_release_once(settings, media, monotonic):
+    """Each lifespan builds its own components and frees them when its worker has stopped."""
+    releases = []
+    for count in (1, 2):
+        with client_with_release(settings, media, monotonic, lambda: releases.append(1)) as client:
+            runtime = client.app.state.runtime
+        assert not runtime.worker_thread.is_alive()
+        assert len(releases) == count
+
+
+def test_startup_failure_releases_when_the_runtime_cannot_be_built(settings, media, monotonic, tmp_path):
+    """No worker exists to free the components, so the lifespan does."""
+    settings = Settings(**{**settings.__dict__, 'database': tmp_path / 'missing' / 'db.sqlite3'})
+    releases = []
+    with pytest.raises(sqlite3.OperationalError), \
+            client_with_release(settings, media, monotonic, lambda: releases.append(1)):
+        pass
+    assert releases == [1]
+
+
+def runtime_with_release(settings, media, monotonic, release):
+    """Return a runtime that is built but not started."""
+    return testee._Runtime(
+        settings, testee.Components(media=media, captions=FakeCaptions(), monotonic=monotonic, release=release),
+    )
+
+
+def test_a_worker_thread_that_cannot_be_created_releases_at_once(settings, media, monotonic):
+    """With no thread to free the components, starting does so itself."""
+    releases = []
+    runtime = runtime_with_release(settings, media, monotonic, lambda: releases.append(1))
+    with patch.object(runtime.worker_thread, 'start', side_effect=RuntimeError('cannot start')), \
+            pytest.raises(RuntimeError):
+        runtime.start()
+    assert releases == [1]
+
+
+def test_an_interrupted_start_leaves_the_release_to_the_running_worker(settings, media, monotonic):
+    """An interrupt after the thread began must not free what it may use; the worker stops and frees it itself."""
+    threads = []
+    runtime = runtime_with_release(
+        settings, media, monotonic, lambda: threads.append(threading.current_thread().name),
+    )
+    begin = runtime.worker_thread.start
+
+    def interrupted():
+        begin()
+        raise KeyboardInterrupt
+
+    try:
+        with patch.object(runtime.worker_thread, 'start', interrupted), pytest.raises(KeyboardInterrupt):
+            runtime.start()
+        runtime.worker_thread.join(10)
+        stopped_by_start = not runtime.worker_thread.is_alive()
+    finally:
+        runtime.worker.stop()
+        runtime.worker_thread.join(10)
+    assert not runtime.worker_thread.is_alive()
+    assert stopped_by_start  # checked after the cleanup above, which would otherwise hide a missing stop
+    assert threads == [runtime.worker_thread.name]
+
+
+def test_an_abandoned_worker_releases_only_after_its_last_caption_use(settings, media, monotonic):
+    """Shutdown returning does not free what a still-running worker is about to use."""
+    started = threading.Event()
+    release_download = threading.Event()
+    events = []
+
+    def slow_download(video, path, on_activity):
+        started.set()
+        release_download.wait(30)
+        path.write_bytes(b'media')
+
+    class RecordingCaptions(FakeCaptions):
+        """Records each use, so its order against the release can be checked."""
+
+        def find_track(self, video_id, languages):
+            """Record the use and return the English track."""
+            events.append('find_track')
+            return super().find_track(video_id, languages)
+
+    media.download_media = slow_download
+    settings = Settings(**{**settings.__dict__, 'shutdown_grace': 0.1})
+    try:
+        with client_with_release(
+            settings, media, monotonic, lambda: events.append('released'), RecordingCaptions(),
+        ) as client:
+            runtime = client.app.state.runtime
+            client.post('/jobs/videos-with-captions', json={'url': VIDEO_URL, 'languages': ['en']})
+            assert started.wait(10)
+        assert runtime.worker_thread.is_alive()
+        assert events == []
+    finally:
+        release_download.set()
+        runtime.worker_thread.join(10)
+    assert not runtime.worker_thread.is_alive()
+    assert events == ['find_track', 'released']

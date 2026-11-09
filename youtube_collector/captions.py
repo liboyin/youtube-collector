@@ -56,7 +56,16 @@ class CaptionClient:
 
     def __init__(self, api: YouTubeTranscriptApi | None = None) -> None:
         """Create the client; nothing contacts YouTube until a method is called."""
-        self._api = YouTubeTranscriptApi(http_client=timeout_session()) if api is None else api
+        self._session = None if api is not None else timeout_session()
+        self._api = YouTubeTranscriptApi(http_client=self._session) if api is None else api
+
+    def close(self) -> None:
+        """Close the HTTP session this client created; an injected client stays with its owner.
+
+        Call it only once nothing can use the client again, from the thread that owns it.
+        """
+        if self._session is not None:
+            self._session.close()
 
     def find_track(self, video_id: str, languages: Sequence[str]) -> Transcript | None:
         """Return the caption track to use, or None when captions are disabled or no track matches.
