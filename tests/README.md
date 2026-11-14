@@ -6,6 +6,7 @@
 
 - Tests mirror the package: `tests/test_<module>.py` for `youtube_collector/<module>.py`. Standalone scripts outside the package, such as the review skill's references, are tested under `tests/tooling/`.
 - Import the module under test as `import youtube_collector.my_module as testee`, call it as `testee.function_name`, and patch its attributes with `patch.object(testee, 'attribute', ...)`. Standalone scripts MAY instead be loaded by file path as `testee`, with the same call and patch conventions.
+- Shared fixtures live in `conftest.py` files: `tests/conftest.py` installs the [network guard](#network) and owns test threads and loopback servers, and `tests/tooling/conftest.py` builds the owned subprocess environment for the shell-tool tests. Any copy of the suite, such as a review scratch tree, keeps both.
 - Order test functions to match the source file's function order.
 - Test names describe the protected behavior, and each test keeps a one-line docstring. Comments explain non-obvious reasons or trade-offs.
 
@@ -19,9 +20,9 @@
 
 ## Network
 
-- Every test runs under the network guard in `tests/network_guard.py`, which the autouse `network_refusals` fixture in `tests/conftest.py` installs for each test and removes afterwards. Connections, datagrams and forward or reverse name lookups for anything but loopback (`127.0.0.0/8`, `::1`, `localhost`) raise `ExternalNetworkError`, an `OSError`, naming the destination; because code under test may swallow that error, any refused attempt also fails the test at teardown. A test that refuses on purpose, such as the guard's own tests, calls `network_refusals.take()`.
+- Every test runs under the network guard in `tests/network_guard.py`, which the autouse `network_refusals` fixture in `tests/conftest.py` installs for each test and removes afterwards. Connections, datagrams and forward or reverse name lookups for anything but loopback (`127.0.0.0/8`, `::1`, `localhost`) raise `ExternalNetworkError`, an `OSError`, naming the destination; because code under test may swallow that error, any refused attempt also fails the test at teardown. A test that refuses on purpose, such as the guard's own tests, calls `network_refusals.take()`; where an assertion can fail before that call, it takes them in a `finally`, so that the failed assertion stays the test's only failure instead of also failing teardown.
 - The lifecycle service installs the same guard for its whole process and logs each refusal; the `lifecycle` fixture fails the test when a service log holds one. A test that expects refusals there sets `lifecycle.expect_refusals`.
-- The guard covers Python code that uses the `socket` module. It does not cover native code that opens its own sockets, or other child processes, such as ffmpeg, Deno or the shell scripts under test, which must be given fakes or loopback endpoints instead. Use reserved destinations for tests that must be refused: `192.0.2.1` (RFC 5737) and names under `.invalid` (RFC 2606).
+- The guard covers Python code that uses the `socket` module. It does not cover native code that opens its own sockets, or other child processes, such as ffmpeg, Deno or the shell scripts under test, which must be given fakes or loopback endpoints instead. Use reserved destinations for tests that must be refused: `192.0.2.1` (RFC 5737) and names under `.invalid` (RFC 2606). They reach nothing even when the guard is broken, as under a mutant of the guard, which otherwise sends their lookups to the system resolver.
 
 ## Threads, servers and asynchronous work
 
