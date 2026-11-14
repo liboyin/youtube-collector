@@ -5,12 +5,61 @@ description: Select and implement a small group of related open tasks and review
 
 # Grouped Task Execution
 
-Use this recommended workflow for related backlog tasks. [AGENTS.md](../../../AGENTS.md) owns standards and commit requirements, [tasks/README.md](../../../tasks/README.md#maintaining-tasks) owns task boundaries and archival, and the [adversarial review skill](../adversarial-review/SKILL.md) owns review mechanics. Explicit user instructions take precedence. This skill does not turn a documentation audit or unrelated fixes into a backlog execution group.
+Use this workflow for a group of related backlog tasks.
 
-1. **Select and bound.** Choose a small, high-value group sharing a behavior, invariant, or dependency. Revalidate each task against current code and establish its boundary under the [task rules](../../../tasks/README.md#maintaining-tasks). Keep one authoritative boundary per task in `tasks/open/<ID>.md`, and reference it in the review dispatch. Record intended commit boundaries and order before implementation; freeze, validate and review each independent candidate in that sequence. Grouping does not expand authorization or settle unresolved material decisions.
-2. **Implement in dependency order.** The main agent implements the group itself, without implementation subagents. Implement foundations before dependent behavior, using focused checks between stages. Assign one primary mutation-evidence producer per cohesive candidate.
-3. **Integrate and freeze.** The main agent owns integration, final validation and commit boundaries. Confirm the planned commit boundaries under AGENTS; tightly coupled tasks may share one candidate and integrated review. Resolve integration issues, confirm the freeze, and run final gates; isolated evidence work may run alongside them. Before each freeze, compare the work against the plan recorded in step 1 (commit boundaries and order) and record any deviation. Checks that need a Docker daemon follow AGENTS' [no-Docker rule](../../../AGENTS.md#validation-and-review); collect the host checks they leave in the one open host-check task (T10) rather than per-task notes. Dispatch review only when required gates and evidence are ready. Independent candidates may be reviewed in parallel, each frozen in its own worktree, as the review skill's [parallel candidates](../adversarial-review/references/parallel-candidates.md) file describes. Intermediate states need full gates and separate review only if committed independently.
-4. **Review and resolve.** Apply the [review procedure](../adversarial-review/SKILL.md#procedure) to all accepted boundaries, acceptance criteria, retained behavior and integration paths. For already reviewed tasks, record whether integration introduces uncovered risks and request further review only when needed. Follow that skill for candidate changes, evidence reuse, follow-ups and finding dispositions; the main agent remains accountable for the result.
-5. **Close.** Verify done criteria and disposition every review finding, with no unresolved Blocking finding. Close the tasks under the [task rules](../../../tasks/README.md#maintaining-tasks) before committing.
-6. **Gap review.** After the group's commits, the main agent reviews the committed range itself, without using the [adversarial review](../adversarial-review/SKILL.md) skill. Check it against the accepted boundaries, contracts, decisions, completion records, documentation and conventions, especially for risks only the combined changes create. Report each gap with location, evidence and impact, separating defects from hypotheses and nits. Gaps do not expand authorization: report them before fixing unless the user has asked for fixes. Fix them under the normal boundary, gate, review and archival rules, then repeat until no gap remains or each has a recorded disposition.
-7. **Report and reflect.** Report changes, checks, verdicts, the gap-review outcome, deferrals and limitations, linking completion records. Follow the review skill's [retention and cleanup rules](../adversarial-review/SKILL.md#evidence-retention). End the handoff with any observed governance friction and concrete improvements, distinguishing it from execution mistakes; if none arose, say so briefly. This feedback is advisory; do not edit governance documents or skills on the basis of this reflection unless the user asks.
+The main agent implements the group itself, without implementation subagents. The main agent also owns the integration, the final validation and the commit boundaries.
+
+## 1. Select and bound
+
+1. Choose a small, high-value group of tasks that share a behavior, an invariant or a dependency.
+2. Revalidate each task against the current code.
+3. Bound each task under the [task rules](../../../tasks/README.md#bound-a-task). Keep one authoritative boundary for each task in `tasks/open/<ID>.md`.
+4. Record the intended commit boundaries and their order before implementation.
+
+Grouping does not expand authorization, and it does not settle an unresolved material decision.
+
+## 2. Implement in dependency order
+
+- Implement foundations before the behavior that depends on them.
+- Run focused checks between stages.
+
+## 3. Integrate and freeze
+
+1. Resolve the integration issues.
+2. Compare the work with the plan from step 1, and record each deviation.
+3. Confirm the commit boundaries. Tightly coupled tasks MAY share one candidate and one integrated review.
+4. Freeze the candidate and run the final gates. Isolated evidence work MAY run at the same time.
+
+These rules also apply:
+
+- Freeze, validate and review each independent candidate in the order from step 1.
+- An intermediate state needs full gates and its own review only if it is committed independently.
+- Independent candidates MAY be reviewed in parallel, as [parallel candidates](../adversarial-review/references/parallel-candidates.md) describes.
+
+## 4. Review and resolve
+
+- Apply the [review procedure](../adversarial-review/SKILL.md#procedure) to the integrated group.
+- [Review Scope](../adversarial-review/SKILL.md#review-scope) says what the review covers, and when tasks that were already reviewed need a further review.
+
+## 5. Close
+
+1. Verify the done criteria of each task.
+2. Close the tasks under the [task rules](../../../tasks/README.md#close-a-task) before the commit.
+
+## 6. Gap review
+
+After the group's commits, the main agent reviews the committed range itself. This step does not use the adversarial review skill.
+
+1. Check the range against the accepted boundaries, contracts, decisions, completion records, documentation and conventions.
+2. Look especially for risks that only the combined changes create.
+3. Report each gap with its location, evidence and impact. Separate defects from hypotheses and from nits.
+4. Report the gaps before you fix them, unless the user asked for fixes. A gap does not expand authorization.
+5. Fix each gap under the normal rules for boundaries, gates, review and completion records.
+6. Repeat until no gap remains, or until each gap has a recorded disposition.
+
+## 7. Report and reflect
+
+- Report the changes, checks, verdicts, gap-review outcome, deferrals and limitations. Link the completion records.
+- End the handoff with the governance friction that you observed and concrete improvements. Separate friction from your own execution mistakes.
+- If no friction arose, say so briefly.
+- Treat this feedback as a proposal. [Governance Files](../../../AGENTS.md#governance-files) says where a lesson goes and who approves a governance edit.

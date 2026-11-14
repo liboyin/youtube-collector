@@ -1,22 +1,116 @@
 # Tasks
 
-This directory owns task state. [TODO.md](TODO.md) holds the recommended order, shared constraints and the index of open tasks; [open/](open/) holds one file per open task; [closed/](closed/) holds one completion record per closed task, and per committed non-trivial ad-hoc change. AGENTS owns general working principles and the [review skill](../.agents/skills/adversarial-review/SKILL.md) owns the review procedure; this file owns how tasks are recorded, bounded and closed.
+This directory owns the state of tasks. This file owns how a task is recorded, bounded and closed. [STYLE.md](../STYLE.md#glossary) defines the terms.
 
-Work arrives in two ways. A **recorded task** is opened in `open/` and closed into `closed/`. An **ad-hoc change**, requested directly rather than recorded beforehand, skips `open/`: it states its boundary to the user before implementation (AGENTS requires one for every change), and, if it is non-trivial, its commit adds a record straight to `closed/<ID>.md` with the next ID, using the same skeleton and the same closing rules (rule 5). Documentation-only and trivial ad-hoc changes need only a descriptive commit message. An ad-hoc request that grows beyond one cohesive change, or that will not finish in the session, becomes a recorded task.
+- [TODO.md](TODO.md) holds the recommended order, the constraints that several tasks share, and the index of open tasks.
+- [open/](open/) holds one file for each open task.
+- [closed/](closed/) holds one completion record for each closed task and for each committed non-trivial ad-hoc change. The directory listing is the index of closed tasks.
+
+## Two kinds of work
+
+- A **recorded task** is opened in `open/` and closed into `closed/`.
+- An **ad-hoc change** is requested directly and skips `open/`.
+
+These rules apply to an ad-hoc change:
+
+1. State its boundary to the user before implementation, as [AGENTS.md](../AGENTS.md#scope-and-decisions) requires for every change.
+2. If the change is non-trivial, its commit adds a completion record at `closed/<ID>.md` with the next ID. The record uses the same skeleton and the same closing rules as a recorded task.
+3. If the change is trivial or documentation-only, a descriptive commit message is enough.
+4. If the change grows beyond one cohesive change, or will not finish in the session, record it as a task.
 
 ## Maintaining tasks
 
-1. **Recording.** Every open task has its own file, `open/<ID>.md`, from the moment it is recorded, and one line in TODO's index (ID, priority, title, link). Give each task a stable ID, severity or priority, evidence status, relevant paths, expected outcome, validation criteria and dependencies. Keep hypotheses distinguishable from validated defects; preserve reviewer classifications and record user dispositions. Do not recycle IDs. One file per task keeps concurrent work from editing the same lines; the TODO index line changes only when a task is added, re-prioritized or closed.
-2. **Bounding.** Keep unassigned work compact. Before implementation, expand the task's file in place into a full boundary, using the skeleton below. It extends the boundary [AGENTS](../AGENTS.md#scope-and-decisions) requires of every change (intent, dependencies, non-goals, validation, done criteria) with the implementation direction, assumptions, the affected compatibility surface and the required mutation evidence. The compatibility surface names every HTTP contract, configuration setting or on-disk layout whose signature or semantics the change could affect, and states which are preserved. Python modules are internal unless DESIGN declares a public API. The boundary is committed, or ships in the candidate, because the review working record is machine-local; the working record links to it rather than copying it, and the reviewer is given its path. State constraints shared by a group once, in TODO's shared constraints or the first task's file, and link them; retain distinct acceptance criteria for each task.
-3. **Decisions.** Record accepted decisions with their rationale and affected tasks in [DESIGN.md](../DESIGN.md). Keep unresolved choices explicit. When a decision changes, record its supersession and update affected task files and dependencies before the implementation commit.
-4. **Readiness.** Use explicit dependencies and readiness, and TODO's recommended order, to guide execution. Do not build phase-closure fences or imply that every non-blocking issue must land before unrelated work can proceed.
-5. **Closing.** Move `open/<ID>.md` to `closed/<ID>.md` with `git mv` in the closing commit, so the accepted boundary becomes the record's "Origin and boundary" without copying, remove its line from TODO's index, put a one-line `**Outcome:**` under the record's title, and append the remaining sections. Preserve the task's origin, accepted boundary and superseding decisions, revalidation, implementation or other disposition, validation commands and results with revision/environment provenance, required or performed mutation evidence, review findings and their validation/dispositions, limitations, and cleanup. State when checks or review were not performed and why; an explicit review waiver is not a passed review. Retain essential evidence in the record or durable linked artifacts under the [review skill's evidence-retention rules](../.agents/skills/adversarial-review/SKILL.md#evidence-retention); temporary paths alone are not a completion archive. The committed archive is the only evidence other machines see, so it MUST be self-contained: a record MAY link other committed files, but never machine-local paths such as session scratch or a working record. Omit inapplicable sections. Each task keeps its own record and acceptance evidence. Link shared evidence by section instead of repeating it, identifying the applicable candidate and any differences; separately committed tasks retain their own validation, mutation outcomes and review verdict. Sharing a record section does not establish eligibility to reuse validation. Use stable headings for linked sections; short fields may remain inline. In the same commit, update the documents the task made stale: DESIGN section 14 (architecture) for added or changed modules, DESIGN section 7 for deployment, README's status line and operating sections, TODO's recommended order, and any open task that named the closed one; current operations belong in README. Moving the file changes what its relative links resolve to: in the same commit, fix the links inside the record (a sibling open task becomes `../open/<ID>.md`, and a closed one `<ID>.md`) and every link to it from other files, then check that they all resolve.
-6. **Deferral and acceptance without change.** Record deferral or acceptance without change explicitly, with the reason and any revisit trigger. Closing an obsolete task or accepting it without change requires a closed record with its Outcome line, as above; deferred work stays in `open/`. Do not silently drop inherited work or treat a documentation rewrite as an implementation fix.
-7. **Evidence and consistency.** Keep evidence tied to its revision and provenance; historical review results do not certify an executor's current gates. After restructuring, check local links, the TODO index against `open/`, and ID and dependency consistency.
+### Record a task
+
+- Create `open/<ID>.md` at the moment you record the task. One file for each task keeps concurrent work away from the same lines.
+- Add one line to TODO's index: the ID, the priority, the title and a link.
+- Change that line only when the task is added, re-prioritized or closed.
+- Give the task a stable ID. Never reuse an ID.
+- State the severity or priority, the evidence status, the relevant paths, the expected outcome, the validation criteria and the dependencies.
+- Keep a hypothesis distinguishable from a validated defect.
+- Preserve the reviewer's classification, and record the user's dispositions.
+- Keep the task compact until it is accepted for implementation.
+
+### Bound a task
+
+Before implementation, expand the task's file in place into a full boundary. Use the [skeleton](#open-task-file).
+
+- The boundary adds four parts to the boundary that [AGENTS.md](../AGENTS.md#scope-and-decisions) requires: the implementation direction, the assumptions, the compatibility surface and the required mutation evidence.
+- The compatibility surface names every HTTP contract, configuration setting and on-disk layout whose signature or meaning the change could affect. It states which of them are preserved.
+- Python modules are internal, unless DESIGN declares a public API.
+- The boundary must be in a committed file or in the candidate, because the working record is machine-local.
+- The working record links to the boundary and does not copy it. Give the reviewer the boundary's path.
+- If a group of tasks shares a constraint, state it once and link to it. Put it in TODO's shared constraints or in the first task's file.
+- Each task keeps its own acceptance criteria.
+
+### Record decisions
+
+- Record each accepted decision in [DESIGN.md](../DESIGN.md), with its rationale and the tasks that it affects.
+- Keep unresolved choices explicit.
+- If a decision changes, update the affected task files and dependencies before the implementation commit.
+
+### Choose the order
+
+- Use the explicit dependencies and TODO's recommended order to choose the next task.
+- A non-blocking issue does not block unrelated work. Do not require a whole phase to close first.
+
+### Close a task
+
+Do these steps in the closing commit:
+
+1. Move `open/<ID>.md` to `closed/<ID>.md` with `git mv`. The accepted boundary then becomes the record's "Origin and boundary" without a copy.
+2. Remove the task's line from TODO's index.
+3. Replace the priority line under the title with a one-line `**Outcome:**`.
+4. Append the remaining sections of the [closed record](#closed-record).
+5. Fix the links that the move changed:
+   - Inside the record, a sibling open task becomes `../open/<ID>.md`, and a closed task becomes `<ID>.md`.
+   - Fix every link to the record from other files.
+   - Check that all these links resolve.
+6. Update the documents that the task made stale:
+   - DESIGN section 14 (architecture), for added or changed modules.
+   - DESIGN section 7, for deployment.
+   - README's status line and operating sections. Current operations belong in README.
+   - TODO's recommended order.
+   - Each open task that names the closed task.
+
+The record preserves these items. Omit an item that does not apply.
+
+- The task's origin, the accepted boundary and each superseding decision.
+- The revalidation of the task against the code.
+- The implementation, or another disposition.
+- The validation commands and their results, with the revision and the environment.
+- The mutation evidence that was required or performed.
+- The review findings, with their validation and dispositions.
+- The limitations and the cleanup.
+
+These rules apply to the record:
+
+- If a check or the review was not performed, state that and the reason. A review waiver is not a passed review.
+- The record MUST be self-contained, because other machines see only committed files.
+- The record MAY link other committed files.
+- Keep essential evidence in the record or in a durable linked artifact, under the [evidence-retention rules](../.agents/skills/adversarial-review/SKILL.md#evidence-retention). Temporary paths alone are not an archive.
+
+### If several tasks share evidence
+
+- Each task keeps its own record and its own acceptance evidence.
+- Link shared evidence by section, and do not repeat it. Identify the candidate that it applies to, and state any differences.
+- Tasks that are committed separately keep their own validation, mutation outcomes and review verdict.
+- A shared section does not make validation reusable. [Evidence reuse](../.agents/skills/adversarial-review/references/evidence-reuse.md) owns that decision.
+- Use stable headings for linked sections. Short fields may stay inline.
+
+### Defer a task, or accept it without change
+
+- Record a deferral, or an acceptance without change, explicitly. Give the reason and a revisit trigger.
+- A deferred task stays in `open/`.
+- An obsolete task, or a task accepted without change, needs a closed record with its Outcome line.
+- Do not drop inherited work silently.
+- A documentation rewrite is not an implementation fix.
+
+### After a restructure of the tasks
+
+Check the local links, the TODO index against `open/`, and the consistency of IDs and dependencies.
 
 ## Open task file
-
-A newly recorded task starts compact; it is expanded in place before implementation. Keep one source line per prose paragraph.
 
 ```markdown
 # <ID>: <title>
@@ -42,4 +136,11 @@ A newly recorded task starts compact; it is expanded in place before implementat
 
 ## Closed record
 
-At closing, the file gains the `**Outcome:**` line under its title (replacing the priority line) and the sections Implementation, Validation, Mutation evidence, Review, Host checks and Limitations after its boundary, as the records in [closed/](closed/) show. The directory listing is the index of closed tasks; there is no separate dispositions list.
+At closing, the file gains the `**Outcome:**` line and these sections after its boundary, as the records in [closed/](closed/) show:
+
+- Implementation.
+- Validation.
+- Mutation evidence.
+- Review.
+- Host checks.
+- Limitations.
