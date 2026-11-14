@@ -22,7 +22,11 @@ class NetworkRefusals:
         self._messages.append(message)
 
     def take(self) -> list[str]:
-        """Return the refusals so far and forget them, for a test that makes them on purpose."""
+        """Return the refusals so far and forget them, for a test that makes them on purpose.
+
+        Call it in a ``finally`` when an assertion can fail before it: refusals left untaken also fail the
+        test at teardown, and that second failure hides the first.
+        """
         messages, self._messages[:] = self._messages[:], []
         return messages
 
@@ -39,7 +43,11 @@ def network_refusals() -> Iterator[NetworkRefusals]:
         network_guard.NetworkGuard(refusals.report).install(patch.setattr)
         yield refusals
         attempts = refusals.take()
-        assert not attempts, f'The test tried to reach beyond loopback: {attempts}'
+        assert not attempts, (
+            f'The test tried to reach beyond loopback: {attempts}. Give the code under test a fake or a loopback '
+            'endpoint; if the attempt is deliberate, take it with network_refusals.take(), in a finally if an '
+            'assertion can fail before then (tests/README.md, Network).'
+        )
 
 
 class ThreadOwner:

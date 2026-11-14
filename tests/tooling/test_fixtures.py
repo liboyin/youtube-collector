@@ -39,7 +39,7 @@ def run_nested(tmp_path, source):
 
 
 def test_a_swallowed_external_connection_fails_teardown(tmp_path):
-    """Code that catches the guard's error still fails its test, at teardown, naming the destination."""
+    """Code that catches the guard's error still fails its test, at teardown, naming the destination and the remedy."""
     status, output = run_nested(tmp_path, '''
 import socket
 
@@ -53,6 +53,7 @@ def test_swallow():
     assert status == 1, output
     assert 'ERROR at teardown of test_swallow' in output
     assert 'The test tried to reach beyond loopback' in output and '192.0.2.1' in output
+    assert 'network_refusals.take(), in a finally' in output
 
 
 def test_taken_refusals_and_loopback_pass_teardown(tmp_path):
