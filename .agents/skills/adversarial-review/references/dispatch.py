@@ -3,7 +3,8 @@
 
 The base revision is read from the target when the prompt is written, never remembered. Standard
 input is closed, because the CLI otherwise waits for more prompt text. The raw event stream goes to
-``--log``; the session ID and the reviewer's report are printed.
+``--log``; the session ID and the reviewer's report are printed. A missing CLI or login stops the
+dispatch before anything is sent.
 """
 
 import argparse
@@ -23,6 +24,23 @@ _IDENTITY = (
     'Your CLI cannot observe its own model or effort; the dispatch arguments are '
     f"{MODEL} and {EFFORT}. Return the skill's report as your final message."
 )
+
+
+_BLOCKED = (
+    'This blocks the review. Report it to the user and ask for direction. Do not install a plugin, do not use '
+    'another reviewer or model, and do not claim a verdict.'
+)
+
+
+def login_problem() -> str | None:
+    """Return why the Codex CLI cannot be used, or None when it is installed and logged in."""
+    try:
+        done = subprocess.run(['codex', 'login', 'status'], stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    except OSError as error:
+        return f'the codex command cannot run ({error.strerror})'
+    if done.returncode != 0:
+        return f'codex login status exited with {done.returncode}: {(done.stdout + done.stderr).strip()}'
+    return None
 
 
 def base_revision(target: Path) -> str:
@@ -85,7 +103,8 @@ def main(argv: list[str] | None = None) -> int:
         argv: CLI arguments, defaulting to the process arguments.
 
     Returns:
-        The CLI's exit status, or one if it succeeded without returning a report.
+        The CLI's exit status, one if it succeeded without returning a report, or two if the CLI is
+        missing or not logged in.
     """
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--target', type=Path, default=Path.cwd(), help='the repository or frozen worktree')
@@ -99,6 +118,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--delta', help='what changed; required with --resume')
     args = parser.parse_args(argv)
     target = args.target.resolve()
+    problem = login_problem()
+    if problem is not None:
+        print(f'dispatch: {problem}. {_BLOCKED}', file=sys.stderr)
+        return 2
     if args.resume:
         if not args.delta:
             parser.error('--resume needs --delta')

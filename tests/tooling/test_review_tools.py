@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import os
 import runpy
 import shlex
 import subprocess
@@ -103,6 +104,7 @@ def test_mutate_reports_a_killed_mutant_with_its_evidence(tmp_path, repo, capsys
     assert 'assert -1 == 3' in text
     assert 'threads=[]' in text
     assert 'FAILED tests/test_calc.py::test_add' in text
+    assert 'advice:' not in text
     assert 'a + b' in (repo / CALC).read_text(encoding='utf-8')
     assert 'Not killed: 0' in capsys.readouterr().out
 
@@ -161,8 +163,159 @@ def test_mutate_restores_the_copy_between_mutants(tmp_path, repo):
 def test_mutate_counts_a_collection_error_as_invalid(tmp_path, repo):
     """A mutant that breaks imports proves nothing about behavior."""
     status, evidence = run_batch(tmp_path, repo, ('M1', 'adds', CALC, 'a + b', 'a +', TESTS))
+    text = evidence.read_text(encoding='utf-8')
     assert status == 1
-    assert '[INVALID]' in evidence.read_text(encoding='utf-8')
+    assert '[INVALID]' in text
+    assert 'advice: ' in text
+
+
+@pytest.mark.parametrize(('run', 'expected'), [
+    (mutate.Run(None, 'timed out', None, ()), 'narrowest tests'),
+    (mutate.Run(1, '1 failed', None, ('FAILED t',)), 'provenance was not verified'),
+    (mutate.Run(4, 'usage', 'seen', ()), 'status 4'),
+    (mutate.Run(1, 'mixed', 'seen', ('FAILED t', 'ERROR u'), ('BEHAVIORAL t: boom',)), 'in a finally'),
+    (mutate.Run(1, 'broken', 'seen', ('FAILED t',), ('NON_BEHAVIORAL t: SyntaxError',)), 'broken code'),
+    (mutate.Run(1, 'no reason known', 'seen', ('FAILED t',)), 'no failure reason'),
+])
+def test_advice_names_the_reason_a_run_is_not_evidence(run, expected):
+    """Each kind of invalid run gets the remedy that fits it."""
+    assert expected in mutate.advice(run)
+
+
+def focused(tmp_path, repo, *arguments):
+    """Run tests with no mutant through the command line; return the status and the evidence text."""
+    evidence = tmp_path / 'focused.txt'
+    status = mutate.main(['--evidence', str(evidence), '--repo', str(repo), *arguments])
+    return status, evidence.read_text(encoding='utf-8') if evidence.exists() else ''
+
+
+def test_mutate_runs_tests_with_no_mutant(tmp_path, repo, capsys):
+    """A focused run passes on the unmutated copy, with the candidate's identity and provenance."""
+    status, text = focused(tmp_path, repo, '--tests', 'tests/test_calc.py')
+    assert status == 0
+    assert 'CANDIDATE sha256=' in text
+    assert "FOCUSED ['tests/test_calc.py'] exit=0 2 passed" in text
+    assert 'ACTUAL_IMPORT_PROVENANCE' in text
+    assert 'modules=0' not in text
+    assert 'advice:' not in text
+    assert 'FOCUSED' in capsys.readouterr().out
+
+
+def test_mutate_reports_a_failing_focused_run(tmp_path, repo):
+    """A focused run of a dirty candidate that fails its test exits with one and says why."""
+    (repo / CALC).write_text('def add(a, b):\n    return 0\n', encoding='utf-8')
+    status, text = focused(tmp_path, repo, '--tests', 'tests/test_calc.py')
+    assert status == 1
+    assert 'BEHAVIORAL tests/test_calc.py::test_add' in text
+    assert 'advice:' not in text
+
+
+def test_mutate_counts_a_focused_run_that_ran_nothing_as_not_evidence(tmp_path, repo):
+    """A selection pytest cannot run is neither a pass nor a failure."""
+    status, text = focused(tmp_path, repo, '--tests', 'tests/test_absent.py')
+    assert status == 2
+    assert 'advice: ' in text
+
+
+@pytest.mark.parametrize(('run', 'reason'), [
+    (mutate.Run(None, 'timed out after 5 s', None, ()), 'the run timed out'),
+    (mutate.Run(0, '2 passed', None, ()), 'provenance was not verified'),
+    (mutate.Run(1, '1 failed', None, ('FAILED t',)), 'provenance was not verified'),
+    (mutate.Run(4, 'no tests ran', 'seen', ()), 'pytest exited with status 4'),
+])
+def test_mutate_counts_an_unverified_focused_run_as_not_evidence(tmp_path, repo, run, reason):
+    """A timeout, a run without provenance or a pytest usage error exits with two and gives the remedy."""
+    with patch.object(mutate, 'run_tests', return_value=run):
+        status, text = focused(tmp_path, repo, '--tests', 'tests/test_calc.py')
+    assert status == 2
+    assert f'advice: {reason}' in text
+
+
+def test_mutate_adds_a_probe_file_to_the_copy_only(tmp_path, repo):
+    """A probe test reaches the copy and runs there; the repository gains nothing."""
+    probe = tmp_path / 'probe.py'
+    probe.write_text(
+        'from youtube_collector.calc import add\n\n\ndef test_probe():\n    assert add(2, 2) == 5\n', encoding='utf-8',
+    )
+    status, text = focused(tmp_path, repo, '--tests', 'tests/test_probe.py', '--add', f'{probe}=tests/test_probe.py')
+    assert status == 1
+    assert 'ADDED tests/test_probe.py sha256=' in text
+    assert 'BEHAVIORAL tests/test_probe.py::test_probe' in text
+    assert not (repo / 'tests/test_probe.py').exists()
+
+
+def test_mutate_runs_mutants_against_an_added_probe(tmp_path, repo):
+    """An added probe test can observe a mutant, and the evidence names the addition."""
+    probe = tmp_path / 'probe.py'
+    probe.write_text(
+        'from youtube_collector.calc import add\n\n\ndef test_probe():\n    assert add(2, 3) == 5\n', encoding='utf-8',
+    )
+    status, evidence = run_batch(
+        tmp_path, repo, ('M1', 'adds', CALC, 'a + b', 'a - b', ['tests/test_probe.py']),
+        extra=('--add', f'{probe}=tests/test_probe.py'),
+    )
+    text = evidence.read_text(encoding='utf-8')
+    assert status == 0
+    assert 'ADDED tests/test_probe.py' in text
+    assert 'M1 [KILLED]' in text
+
+
+@pytest.mark.parametrize('value', ['no-separator', '=tests/x.py', '{source}=', '{source}=/abs.py', '{source}=../x.py'])
+def test_mutate_refuses_a_malformed_addition(tmp_path, repo, capsys, value):
+    """An addition needs a source and a relative path that stays inside the copy."""
+    source = tmp_path / 'probe.py'
+    source.touch()
+    status, text = focused(tmp_path, repo, '--tests', 'tests/test_calc.py', '--add', value.format(source=source))
+    assert status == 2
+    assert 'expected SOURCE=PATH' in capsys.readouterr().err
+    assert text == ''
+
+
+@pytest.mark.parametrize('kind', ['missing', 'directory', 'symlink'])
+def test_mutate_refuses_an_addition_that_is_not_a_regular_file(tmp_path, kind):
+    """Only a regular file is copied: a link could pull in content the caller did not name."""
+    source = tmp_path / 'source'
+    if kind == 'directory':
+        source.mkdir()
+    elif kind == 'symlink':
+        (tmp_path / 'real').touch()
+        source.symlink_to(tmp_path / 'real')
+    with pytest.raises(ValueError, match='not a regular file'):
+        mutate.parse_additions([f'{source}=tests/x.py'])
+
+
+def test_mutate_refuses_an_addition_below_a_symlink(tmp_path):
+    """A symlinked parent in the copy must not redirect the addition outside it."""
+    outside, tree, source = tmp_path / 'outside', tmp_path / 'tree', tmp_path / 'probe.py'
+    outside.mkdir()
+    tree.mkdir()
+    source.write_text('probe', encoding='utf-8')
+    (tree / 'link').symlink_to(outside)
+    with pytest.raises(ValueError, match='below a symlink'):
+        mutate.add_file(tree, source, 'link/probe.py')
+    assert not (outside / 'probe.py').exists()
+
+
+def test_mutate_replaces_a_symlink_instead_of_writing_through_it(tmp_path):
+    """An addition at a symlink's path replaces the link; the link's target keeps its content."""
+    outside, tree, source = tmp_path / 'outside.py', tmp_path / 'tree', tmp_path / 'probe.py'
+    outside.write_text('keep', encoding='utf-8')
+    tree.mkdir()
+    source.write_text('probe', encoding='utf-8')
+    (tree / 'link.py').symlink_to(outside)
+    mutate.add_file(tree, source, 'link.py')
+    assert not (tree / 'link.py').is_symlink()
+    assert (tree / 'link.py').read_text(encoding='utf-8') == 'probe'
+    assert outside.read_text(encoding='utf-8') == 'keep'
+
+
+@pytest.mark.parametrize('arguments', [[], ['mutants.py', '--tests', 'tests/test_calc.py']])
+def test_mutate_requires_either_a_mutants_file_or_tests(arguments, capsys):
+    """The two modes exclude each other, and one of them is required."""
+    with pytest.raises(SystemExit) as raised:
+        mutate.main(['--evidence', 'e', *arguments])
+    assert raised.value.code == 2
+    assert 'either a mutants file or --tests' in capsys.readouterr().err
 
 
 @pytest.mark.parametrize('inside_repository', [True, False])
@@ -255,8 +408,24 @@ def test_mutate_refuses_a_failing_baseline(tmp_path, repo, capsys):
     """Kills mean nothing against a failing baseline."""
     (repo / CALC).write_text('def add(a, b):\n    return 0\n', encoding='utf-8')
     status, _ = run_batch(tmp_path, repo, ('M1', 'adds', CALC, 'return 0', 'return 1', TESTS))
+    error = capsys.readouterr().err
     assert status == 2
-    assert 'Baseline' in capsys.readouterr().err
+    assert 'Baseline' in error
+    assert 'advice: a selected test fails with no mutant' in error
+
+
+@pytest.mark.parametrize(('run', 'reason'), [
+    (mutate.Run(None, 'timed out after 5 s', None, ()), 'the run timed out'),
+    (mutate.Run(0, '2 passed', None, ()), 'provenance was not verified'),
+    (mutate.Run(4, 'no tests ran', 'seen', ()), 'pytest exited with status 4'),
+])
+def test_mutate_explains_a_baseline_that_is_not_evidence(tmp_path, repo, capsys, run, reason):
+    """A baseline that timed out, lost its provenance or ran nothing stops the batch with the remedy."""
+    with patch.object(mutate, 'run_tests', return_value=run):
+        status, evidence = run_batch(tmp_path, repo, ('M1', 'adds', CALC, 'a + b', 'a - b', TESTS))
+    assert status == 2
+    assert f'advice: {reason}' in capsys.readouterr().err
+    assert not evidence.exists()
 
 
 def test_mutate_copies_tracked_files_and_only_the_named_untracked_ones(repo):
@@ -317,8 +486,8 @@ def test_mutate_refuses_an_unloadable_mutants_file(tmp_path):
         mutate.load_mutants(tmp_path / 'mutants.txt')
 
 
-def stub_codex(tmp_path, monkeypatch, *events, status=0):
-    """Put a ``codex`` stub first on PATH that records its arguments."""
+def stub_codex(tmp_path, monkeypatch, *events, status=0, login=0):
+    """Put a ``codex`` stub first on PATH that answers the login check and records its other arguments."""
     bin_dir = tmp_path / 'bin'
     bin_dir.mkdir()
     record = tmp_path / 'codex-args'
@@ -326,6 +495,7 @@ def stub_codex(tmp_path, monkeypatch, *events, status=0):
     stub = bin_dir / 'codex'
     stub.write_text(
         '#!/bin/bash\n'
+        f'if [ "$1" = login ]; then echo "login state {login}"; exit {login}; fi\n'
         f'printf "%s\\n" "$@" > {shlex.quote(str(record))}\n'
         f'printf "%s" {shlex.quote(output)}\n'
         f'exit {status}\n',
@@ -385,6 +555,29 @@ def test_dispatch_fails_without_a_report(tmp_path, repo, monkeypatch, capsys):
     stub_codex(tmp_path, monkeypatch, STARTED)
     assert dispatch.main([*FIRST, '--target', str(repo), '--log', str(tmp_path / 'log')]) == 1
     assert 'no report' in capsys.readouterr().err
+
+
+def test_dispatch_stops_when_the_cli_is_not_logged_in(tmp_path, repo, monkeypatch, capsys):
+    """A failed login check is a blocker: nothing is sent, and the message forbids a substitute."""
+    record = stub_codex(tmp_path, monkeypatch, STARTED, REPORT, login=1)
+    assert dispatch.main([*FIRST, '--target', str(repo), '--log', str(tmp_path / 'log')]) == 2
+    error = capsys.readouterr().err
+    assert 'codex login status exited with 1: login state 1' in error
+    assert 'This blocks the review' in error
+    assert 'do not use another reviewer or model' in error
+    assert not record.exists()
+    assert not (tmp_path / 'log').exists()
+
+
+def test_dispatch_stops_when_the_cli_is_missing(tmp_path, repo, monkeypatch, capsys):
+    """Without a codex command the dispatch reports the blocker instead of raising."""
+    empty = tmp_path / 'empty'
+    empty.mkdir()
+    monkeypatch.setenv('PATH', str(empty))
+    assert dispatch.main([*FIRST, '--target', str(repo), '--log', str(tmp_path / 'log')]) == 2
+    error = capsys.readouterr().err
+    assert 'the codex command cannot run' in error
+    assert 'This blocks the review' in error
 
 
 @pytest.mark.parametrize('arguments', [
@@ -495,6 +688,178 @@ def test_worktree_gates_report_a_worktree_that_cannot_be_made(tmp_path, repo, ca
     assert worktree_gates.main([str(tmp_path / 'wt'), CALC, '--repo', str(repo)]) == 2
     assert 'worktree_gates:' in capsys.readouterr().err
     assert (tmp_path / 'wt/keep').exists()
+
+
+NEW = 'tests/new.txt'
+
+
+def frozen(tmp_path, repo, monkeypatch):
+    """Freeze a candidate that changes a file, adds one and deletes one; return its worktree."""
+    gate_stubs(repo, monkeypatch, tmp_path)
+    (repo / CALC).write_text('def add(a, b):\n    return b + a\n', encoding='utf-8')
+    (repo / NEW).write_text('new', encoding='utf-8')
+    (repo / '.gitignore').unlink()
+    worktree = (tmp_path / 'wt').resolve()
+    assert worktree_gates.main([str(worktree), CALC, NEW, '.gitignore', '--repo', str(repo)]) == 0
+    return worktree
+
+
+def commit_candidate(repo):
+    """Commit the candidate that ``frozen`` made, as the reviewed content."""
+    git(repo, 'add', CALC, NEW)
+    git(repo, 'rm', '-q', '--cached', '.gitignore')
+    git(repo, 'commit', '-q', '-m', 'candidate')
+
+
+def test_worktree_gates_compare_accepts_unchanged_working_files(tmp_path, repo, monkeypatch, capsys):
+    """Working files that still match the reviewed ones compare equal, and unrelated changes do not count."""
+    worktree = frozen(tmp_path, repo, monkeypatch)
+    (repo / 'tests/test_calc.py').write_text('unrelated work\n', encoding='utf-8')
+    assert worktree_gates.main([str(worktree), '--compare', '--repo', str(repo)]) == 0
+    assert 'differ' not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize('change', ['content', 'mode', 'deleted', 'restored', 'link'])
+def test_worktree_gates_compare_reports_a_working_file_that_changed_after_the_freeze(
+    tmp_path, repo, monkeypatch, capsys, change,
+):
+    """A reviewed file whose content, mode, kind or existence changed is named, and nothing is removed."""
+    worktree = frozen(tmp_path, repo, monkeypatch)
+    name = CALC
+    if change == 'content':
+        (repo / CALC).write_text('def add(a, b):\n    return 0\n', encoding='utf-8')
+    elif change == 'mode':
+        (repo / CALC).chmod(0o755)
+    elif change == 'deleted':
+        (repo / CALC).unlink()
+    elif change == 'restored':
+        name = '.gitignore'
+        (repo / name).write_text('.env\n', encoding='utf-8')
+    else:
+        name = NEW
+        (repo / name).unlink()
+        (repo / name).symlink_to('test_calc.py')
+    assert worktree_gates.main([str(worktree), '--compare', '--repo', str(repo)]) == 1
+    error = capsys.readouterr().err
+    assert "the repository's working files differ" in error
+    assert f"['{name}']" in error
+    assert (worktree / NEW).exists()
+
+
+def test_worktree_gates_compare_refuses_a_reviewed_path_below_a_symlink(tmp_path, repo, monkeypatch, capsys):
+    """A parent that became a symlink must not lead the comparison to read outside the repository."""
+    worktree = frozen(tmp_path, repo, monkeypatch)
+    (repo / 'tests').rename(repo / 'moved')
+    (repo / 'tests').symlink_to(tmp_path)
+    assert worktree_gates.main([str(worktree), '--compare', '--repo', str(repo)]) == 2
+    assert 'below a symlink' in capsys.readouterr().err
+
+
+def test_worktree_gates_remove_the_worktree_once_the_commit_holds_the_reviewed_content(tmp_path, repo, monkeypatch):
+    """After the commit, which may hold other files too, the worktree and its registration are gone."""
+    worktree = frozen(tmp_path, repo, monkeypatch)
+    commit_candidate(repo)
+    (repo / 'other.txt').write_text('a completion record', encoding='utf-8')
+    git(repo, 'add', 'other.txt')
+    git(repo, 'commit', '-q', '-m', 'more')
+    assert worktree_gates.main([str(worktree), '--remove', '--repo', str(repo)]) == 0
+    assert not worktree.exists()
+    assert str(worktree) not in git(repo, 'worktree', 'list')
+
+
+@pytest.mark.parametrize('state', ['uncommitted', 'changed', 'deletion uncommitted', 'new file uncommitted'])
+def test_worktree_gates_keep_a_worktree_whose_reviewed_content_is_not_committed(
+    tmp_path, repo, monkeypatch, capsys, state,
+):
+    """The forced removal would destroy the only copy of reviewed content, so it is refused and named."""
+    worktree = frozen(tmp_path, repo, monkeypatch)
+    name = CALC
+    if state == 'changed':
+        (repo / CALC).write_text('def add(a, b):\n    return a + b + 0\n', encoding='utf-8')
+        commit_candidate(repo)
+    elif state == 'deletion uncommitted':
+        name = '.gitignore'
+        git(repo, 'add', CALC, NEW)
+        git(repo, 'commit', '-q', '-m', 'partial')
+    elif state == 'new file uncommitted':
+        name = NEW
+        git(repo, 'add', CALC)
+        git(repo, 'rm', '-q', '--cached', '.gitignore')
+        git(repo, 'commit', '-q', '-m', 'partial')
+    assert worktree_gates.main([str(worktree), '--remove', '--repo', str(repo)]) == 1
+    error = capsys.readouterr().err
+    assert 'the commit at HEAD differ' in error
+    assert f"'{name}'" in error
+    assert 'the worktree is kept' in error
+    assert 'b + a' in (worktree / CALC).read_text(encoding='utf-8')
+    assert (worktree / NEW).read_text(encoding='utf-8') == 'new'
+    assert str(worktree) in git(repo, 'worktree', 'list')
+
+
+@pytest.mark.parametrize('mode', ['--compare', '--remove'])
+def test_worktree_gates_see_a_mode_change_that_git_is_configured_to_ignore(tmp_path, repo, monkeypatch, capsys, mode):
+    """With core.filemode off, a reviewed mode change still counts: it is compared, and never removed unseen."""
+    gate_stubs(repo, monkeypatch, tmp_path)
+    git(repo, 'config', 'core.filemode', 'false')
+    (repo / CALC).chmod(0o755)
+    worktree = (tmp_path / 'wt').resolve()
+    assert worktree_gates.main([str(worktree), CALC, '--repo', str(repo)]) == 0
+    (repo / CALC).chmod(0o644)
+    assert worktree_gates.main([str(worktree), mode, '--repo', str(repo)]) == 1
+    assert f"['{CALC}']" in capsys.readouterr().err
+    assert os.access(worktree / CALC, os.X_OK)
+
+
+@pytest.mark.parametrize('mode', ['--compare', '--remove'])
+def test_worktree_gates_skip_only_the_files_named_as_changed(tmp_path, repo, monkeypatch, capsys, mode):
+    """A file named as changed may differ, as a task record does; any other difference still counts."""
+    worktree = frozen(tmp_path, repo, monkeypatch)
+    (repo / NEW).write_text('results added after the review', encoding='utf-8')
+    (repo / CALC).write_text('def add(a, b):\n    return a + b + 0\n', encoding='utf-8')
+    commit_candidate(repo)
+    arguments = [str(worktree), mode, '--repo', str(repo), '--changed', NEW]
+    assert worktree_gates.main(arguments) == 1
+    error = capsys.readouterr().err
+    assert f"['{CALC}']" in error
+    assert worktree.exists()
+    (repo / CALC).write_text('def add(a, b):\n    return b + a\n', encoding='utf-8')
+    git(repo, 'commit', '-q', '-am', 'the reviewed content')
+    assert worktree_gates.main(arguments) == 0
+    assert worktree.exists() == (mode == '--compare')
+
+
+def test_worktree_gates_remove_leaves_the_worktree_index_alone(tmp_path, repo, monkeypatch):
+    """Reading the reviewed content stages nothing in the worktree."""
+    worktree = frozen(tmp_path, repo, monkeypatch)
+    before = git(worktree, 'status', '--porcelain')
+    assert worktree_gates.main([str(worktree), '--remove', '--repo', str(repo)]) == 1
+    assert git(worktree, 'status', '--porcelain') == before
+    assert '?? tests/new.txt' in before
+
+
+def test_worktree_gates_report_a_path_that_is_not_a_worktree(tmp_path, repo, capsys):
+    """A directory that git does not know is a clean error, and it is kept."""
+    (tmp_path / 'plain').mkdir()
+    (tmp_path / 'plain/keep').touch()
+    assert worktree_gates.main([str(tmp_path / 'plain'), '--remove', '--repo', str(repo)]) == 2
+    assert 'worktree_gates:' in capsys.readouterr().err
+    assert (tmp_path / 'plain/keep').exists()
+
+
+def test_worktree_gates_refuse_to_remove_the_main_working_tree(repo, capsys):
+    """The repository itself is never removed, even when it is clean."""
+    assert worktree_gates.main([str(repo), '--remove', '--repo', str(repo)]) == 2
+    assert 'worktree_gates:' in capsys.readouterr().err
+    assert (repo / CALC).exists()
+
+
+@pytest.mark.parametrize('arguments', [['wt'], ['wt', 'file', '--remove'], ['wt', 'file', '--compare']])
+def test_worktree_gates_require_files_only_to_freeze(arguments, capsys):
+    """Freezing needs the candidate's files; comparing and removing take none."""
+    with pytest.raises(SystemExit) as raised:
+        worktree_gates.main(arguments)
+    assert raised.value.code == 2
+    assert 'name the files' in capsys.readouterr().err
 
 
 @pytest.mark.parametrize('name', ['mutate', 'dispatch', 'worktree_gates'])

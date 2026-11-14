@@ -5,75 +5,166 @@ description: Independently review non-trivial code, test, or configuration chang
 
 # Adversarial Review
 
-[AGENTS.md](../../../AGENTS.md#validation-and-review) owns review requirements, gates and exemptions. This skill owns dispatch, investigation, triage and evidence handling. The reviewer investigates and classifies findings without editing the repository; the main agent owns implementation and dispositions. Documentation-only changes and read-only assessments use AGENTS' exemption.
+[AGENTS.md](../../../AGENTS.md#validation-and-review) owns when a review is required and which changes are exempt. This skill owns how a review runs.
 
 ## Review Scope
 
-Review the complete target on its first assessment. One cohesive commit may cover tightly coupled tasks; independently committed changes each need review. Include every accepted boundary and integration path. Already reviewed tasks need another group review only for integration risks not previously covered; record that coverage decision. Follow-ups cover the delta, affected paths/invariants and unresolved findings. Substantial scope or design changes require full-target review again; integrated review reassesses earlier conclusions.
+- The first assessment covers the complete candidate, with every accepted boundary and integration path.
+- Tightly coupled tasks MAY share one commit and one review. Each independently committed change needs its own review.
+- A follow-up covers the delta, the paths and invariants it affects, and the unresolved findings.
+- If the scope or the design changes substantially, review the complete candidate again.
+- An integrated review of a group reassesses the earlier conclusions.
+- Tasks that were already reviewed need a further group review only for integration risks that no review covered. Record that decision.
 
-Verified cosmetic follow-ups may reuse gates and verdicts only when behavior, test guarantees, build/configuration output, security, concurrency, state/data flow and user-visible contracts cannot change. Check relevant dependencies, environment, modes and symlink targets; run affected lint/format and diff checks, record equivalence and updated fingerprints, and retain prior dispositions. Terminal blank-line cleanup is usually cosmetic; whitespace in strings/configuration or comments consumed as directives is not automatically so. If equivalence is uncertain, run full gates and review. Non-trivial fixes or rollback require full gates and an updated verdict.
+If a follow-up change is cosmetic, or you want to reuse earlier gate results or evidence, read [evidence reuse](references/evidence-reuse.md) first.
 
 ## Reviewer Session
 
-Keep one independent Codex reviewer per task or closely coupled group, retaining its history for follow-ups. Start it without the main agent's conversation. A replacement is allowed for unrelated work, substantial redesign or an unavailable reviewer; record why and transfer outstanding findings/dispositions. Compaction or a new user turn alone does not require replacement. Record agent/session identity, model and effort. A CLI reviewer may be unable to observe its own model or effort; the recorded dispatch command's model and effort arguments then serve as that record, and the reviewer should say so instead of asserting them.
+- Use one independent Codex reviewer for each task or closely coupled group. Keep its session for follow-ups.
+- Start the reviewer without the main agent's conversation.
+- Replace the reviewer only for unrelated work, a substantial redesign or an unavailable reviewer. Record the reason, and transfer the open findings and dispositions.
+- Compaction or a new user turn alone is not a reason to replace the reviewer.
 
-- **Codex:** use `spawn_agent` with `fork_turns: "none"`, `model: "gpt-6.1-sol"`, and `reasoning_effort: "medium"`, unless the user selects otherwise. Continue the recorded reviewer with `followup_task`.
-- **Claude Code:** verify `command -v codex` and `codex login status`, then use `codex exec --dangerously-bypass-approvals-and-sandbox --model gpt-6.1-sol -c model_reasoning_effort="medium" --json <review prompt> < /dev/null`. Record the returned session ID; continue with `codex exec resume --dangerously-bypass-approvals-and-sandbox --model gpt-6.1-sol -c model_reasoning_effort="medium" <SESSION_ID> <review prompt> < /dev/null`. Close stdin as shown: with an open non-terminal stdin, such as a background shell, codex-cli 0.160.1 waits for additional prompt input instead of starting. [dispatch.py](references/dispatch.py) runs these commands, reads the base revision from the target and prints the session ID and report. Use the recorded ID, not `--last`; add `--skip-git-repo-check` if required outside a repository. Missing setup/authentication is a blocker, not a reason to install a plugin.
+How to start the reviewer depends on the main agent:
 
-[AGENTS](../../../AGENTS.md#scope-and-decisions) owns devcontainer and permission assumptions; enforced platform policy still applies. If the requested model or dispatch is unavailable, report the blocker and ask the user for direction. Do not substitute another model or dispatch path without that direction, and do not claim a review verdict. Track each invocation to completion and capture its completion status (exit status for CLI) and report before dispositioning findings.
+- **Codex:** use `spawn_agent` with `fork_turns: "none"`, `model: "gpt-6.1-sol"` and `reasoning_effort: "medium"`, unless the user selects otherwise. Continue the recorded reviewer with `followup_task`.
+- **Claude Code:** run [dispatch.py](references/dispatch.py). It writes the prompt, starts or resumes the Codex CLI, and prints the session ID and the report. Its `--help` text lists the arguments.
+
+If the requested model or dispatch path is unavailable:
+
+1. Report the blocker to the user and ask for direction.
+2. Do not use another model or dispatch path without that direction.
+3. Do not claim a review verdict.
+
+Wait for the reviewer's exit status and report before you decide on any finding.
 
 ## Procedure
 
-### 1. Freeze, gate and snapshot — main agent
+### 1. Freeze, gate and snapshot (main agent)
 
-Freeze candidate edits and establish passing results for every required AGENTS gate on the exact target, using new runs or explicitly permitted evidence reuse. Resolve failures before dispatch. Take the integrity snapshot after the last gate run and immediately before dispatch; any later edit or gate run on the target needs a new snapshot. Record `git status`, content hashes/modes/symlink targets for dirty tracked and in-scope untracked files, out-of-scope untracked paths, and relevant owned processes. [snapshot.py](references/snapshot.py) prints deterministic JSON for everything except processes, including index object IDs and modes; invoke it with Python and pass root-relative in-scope untracked files as arguments. Store output outside the repository and compare only successful runs with `diff`; a failed run, including its refusal of submodules and of tracked paths below a working-tree symlink, is a change to investigate. Never inspect or hash ignored untracked content. Update the compact [working record](#evidence-retention). A temporary integrity snapshot can be discarded after a successful comparison unless needed for investigation or reuse.
+1. Stop editing the candidate.
+2. Obtain a passing result for every gate on the exact candidate. Resolve each failure before dispatch.
+3. Take the integrity snapshot after the last gate run and immediately before dispatch. Run [snapshot.py](references/snapshot.py), and pass each in-scope untracked file as an argument.
+4. Note the processes that you own, if any are relevant.
+5. Update the [working record](#evidence-retention).
 
-**Parallel candidates.** To keep working while a candidate is reviewed, freeze it in its own git worktree outside the repository and the disposable scratch: `git worktree add --detach <path> HEAD`, then copy only the candidate's files into it. The worktree is the review target; nothing else may change it until the verdict. Run the gates there with `PYTHONPATH` set to the worktree root and confirm the package is imported from it ([README Testing](../../../README.md#testing)). [worktree_gates.py](references/worktree_gates.py) creates the worktree from HEAD plus the named files and runs the gates there. Before committing, check that the main tree's copies of the candidate files are identical to the reviewed ones, and build any shared file that holds other uncommitted work (such as `tasks/TODO.md` or DESIGN.md) from HEAD plus the candidate's own change. Remove the worktree after the commit. Its candidate files are uncommitted there by design, so plain `git worktree remove` refuses; once the commit is confirmed to hold the reviewed content, remove it with `git worktree remove --force <path>`, naming only that worktree. Candidates that touch the same files are reviewed one after another, not in parallel.
+These rules apply to the snapshot:
 
-### 2. Dispatch — main agent
+- If you edit the candidate or run a gate on it after the snapshot, take a new snapshot.
+- A failed snapshot run is a change to investigate.
+- Never inspect or hash ignored untracked content.
+- After a successful comparison, you MAY discard the snapshot, unless an investigation or evidence reuse needs it.
 
-Ask the [recorded reviewer](#reviewer-session) to read the current skill and perform step 3. Supply only:
+If you want to keep working while the candidate is under review, read [parallel candidates](references/parallel-candidates.md).
 
-- Repository path and exact target: dirty tree, commit or range; prior target and requested delta for follow-ups. Read the base revision from the target (`git -C <target> rev-parse HEAD`) when writing the dispatch; never repeat a remembered one.
-- In-scope paths, explicitly included untracked files, and unrelated dirty paths to ignore.
-- Purpose in a few sentences.
-- Location of the accepted boundaries (`tasks/open/<ID>.md`, under the [task rules](../../../tasks/README.md#maintaining-tasks)), and the working-record location holding the evidence; a separate report destination if needed.
+### 2. Dispatch (main agent)
 
-Add undocumented constraints, accepted findings not to re-raise, or other evidence only when needed. Do not inline the diff, conversation, repository architecture summaries, suspected defects or main-agent conclusions. Answer reviewer questions with minimum factual context and record material exchanges under Assumptions.
+Ask the [recorded reviewer](#reviewer-session) to read this skill and perform step 3. Supply only these items:
 
-**Read-only repository.** Every dispatch keeps the repository read-only. The reviewer may write evidence outside it; tests, mutants, application execution and other commands requiring writable state use a disposable scratch copy. Source/diff reads and evidence output alone need no copy. Snapshot comparison detects accidents; it is not a security boundary.
+- The repository path and the exact candidate: a dirty tree, a commit or a range. For a follow-up, add the earlier candidate and the delta.
+- The base revision. Read it from the candidate with `git rev-parse HEAD`.
+- The in-scope paths, each included untracked file, and the unrelated dirty paths to ignore.
+- The purpose, in a few sentences.
+- The location of the accepted boundary, which the [task rules](../../../tasks/README.md#maintaining-tasks) place in `tasks/open/<ID>.md`.
+- The location of the working record that holds the evidence, and a separate report destination if you need one.
 
-**Scratch target.** Copy the tracked target state with its in-scope staged/unstaged changes, adding only explicitly named in-scope untracked files. Exclude ignored and unrelated content. Preserve executable bits and recreate repository-relative symlinks inside scratch; never dereference links into the original repository or external paths. Return `Review blocked` if a required target cannot be copied safely. Delete owned scratch at exit after retaining essential evidence.
+These rules protect the reviewer's independence:
 
-**Execution isolation.** Scratch alone does not isolate settings, services or paths. Never copy or use `.env`, browser profiles, the staging share or the service's SQLite volume, and never contact YouTube. Read the [scratch-testing recipe](references/scratch-testing.md) before tests or mutants. Preserve the test bootstrap and owned resources, and verify exercised application imports come from scratch in every test process, including children, without changing the import lifecycle under test. Provenance/environment failures are invalid evidence, not mutation kills.
+- Add a constraint, an accepted finding that the reviewer must not raise again, or other evidence only if the reviewer needs it.
+- Do not send the diff, the conversation, a summary of the architecture, a suspected defect or your own conclusion.
+- Answer a reviewer's question with the minimum of facts. Record each material exchange under Assumptions in the report.
 
-### 3. Investigate and report — reviewer
+**Read-only repository.** Every dispatch keeps the repository read-only.
 
-Read current AGENTS, the complete requested diff, in-scope untracked files and relevant source, tests, docs and configuration. Never read ignored untracked content. Actively try to falsify the change with boundary/failure cases, state transitions and tests that can pass for the wrong reason. Scrutinize SQLite transactions, retention deletes, the API's isolation from the worker thread, restart recovery and the staging marker, atomic publication, resource and concurrency ownership, paths, and yt-dlp and caption failure handling where relevant. Assess correctness, preserved behavior, simplicity, design, documentation and testability; do not manufacture findings, treat taste as a defect or inflate severity.
+- The reviewer MAY write evidence outside the repository.
+- Reading the source or the diff needs no scratch copy.
+- Anything that needs writable state runs in a scratch copy. This includes tests, mutants and the application.
+- The snapshot comparison detects accidents. It is not a security boundary.
 
-Classify each evidenced finding by impact, likelihood, requirements and deferral risk:
+**Scratch runs.** Every scratch run MUST go through [mutate.py](references/mutate.py).
 
-- **Blocking:** must be resolved before commit.
-- **Non-blocking:** a genuine issue that may reasonably be deferred.
-- **Nits:** low-impact style/readability issues with an obvious local remedy.
+- Read the [scratch-testing recipe](references/scratch-testing.md) before the first run.
+- If the tool cannot copy the candidate safely, return `Review blocked`.
+- A scratch copy does not isolate settings, services or host data. The [safety rules](../../../AGENTS.md#safety) apply to every scratch run.
 
-Use safe, bounded verification. Rely on supplied passing gates for the frozen target; do not repeat the full suite without a specific concern. Run focused tests when needed. Apply AGENTS' mutation requirements, including removed/weakened coverage; [independently check supplied evidence](#evidence-retention) and fill required gaps in scratch or return `Review blocked`. Request additional mutations when protection is doubtful. A kill requires a relevant behavioral failure, not collection, syntax, import or environment failure. Record invariant, mutant, command/seed and outcome.
+### 3. Investigate and report (reviewer)
 
-Preserve evidence, clean only owned scratch artifacts/processes, and return the [report](#report). Propose remedies if useful, but never implement repository edits.
+Read these before you judge the change:
 
-### 4. Validate and disposition — main agent
+- The current AGENTS.md.
+- The complete diff and the in-scope untracked files. Never read ignored untracked content.
+- The relevant source, tests, documentation and configuration.
 
-Compare repository status, hashes, modes, symlink targets and out-of-scope untracked paths against step 1. An unexplained change blocks acceptance of the review. Then independently investigate findings without changing the reviewer's classification:
+Try to falsify the change:
 
-- **Blocking:** validate the claim and any remedy's premise/expected effect before implementing; fix validated findings. If not validated, return factual counterevidence to the reviewer. If a materially equivalent Blocking finding remains unvalidated across two consecutive assessments, stop and ask the user for direction.
-- **Non-blocking:** investigate before implementing. Defer only with a reason and revisit trigger; material changes to scope, behavior, architecture or accepted risk require user confirmation.
-- **Nits:** independently validate and fix when practical and in scope, otherwise record a justified deferral and revisit trigger.
+- Probe boundary cases, failure cases and state transitions.
+- Look for tests that can pass for the wrong reason.
+- Where relevant, scrutinize these areas:
+  - SQLite transactions and retention deletes.
+  - The API's isolation from the worker thread.
+  - Restart recovery and the staging marker.
+  - Atomic publication.
+  - Ownership of resources and of concurrent work.
+  - Paths.
+  - Failure handling for yt-dlp and for captions.
+- Assess correctness, preserved behavior, simplicity, design, documentation and testability.
+- Do not manufacture findings, treat taste as a defect, or inflate severity.
 
-Record each finding as **Validated**, **Could not validate**, or **Not independently validated**, with evidence when investigated and a disposition. Never silently discard or reclassify findings; only the reviewer updates its verdict. Report all Non-blocking findings and unfixed Nits to the user. Honor existing user dispositions; a deferral is not acceptance without change. Revalidate candidate changes under [Review Scope](#review-scope). Completion requires no unresolved Blocking review findings and a disposition for every finding; `Review blocked` is not a passing verdict. Unrelated open tasks do not block completion.
+Classify each finding by its impact, its likelihood, the requirements and the risk of deferral:
+
+- **Blocking:** the main agent must resolve it before the commit.
+- **Non-blocking:** a genuine issue that the main agent may reasonably defer.
+- **Nit:** a low-impact issue of style or readability with an obvious local remedy.
+
+Verify safely and within bounds:
+
+- Rely on the supplied passing gates for the frozen candidate. Do not repeat the full suite without a specific concern.
+- If you need a focused test, run it with `mutate.py --tests`.
+- Apply the [mutation requirements](../../../AGENTS.md#tests) of AGENTS.md, also for removed or weakened coverage.
+- Check the supplied evidence independently, as [Evidence Retention](#evidence-retention) describes.
+- If required evidence is missing, produce it in a scratch run or return `Review blocked`.
+- If the protection of a property is doubtful, request more mutants.
+
+Then finish:
+
+1. Preserve the evidence.
+2. Clean up only the scratch artifacts and processes that you own.
+3. Return the [report](#report). You MAY propose a remedy.
+
+### 4. Validate and decide (main agent)
+
+1. Take a new snapshot and compare it with the snapshot from step 1. An unexplained change blocks acceptance of the review.
+2. Investigate each finding yourself. Do not change the reviewer's classification.
+3. Record each finding as **Validated**, **Could not validate** or **Not independently validated**. Add the evidence and the disposition.
+4. Report every Non-blocking finding and every unfixed Nit to the user.
+
+The class of a finding decides what you do with it:
+
+- **Blocking:**
+  - Validate the claim, and the premise and expected effect of any remedy, before you implement it. Fix each validated finding.
+  - If you cannot validate the finding, return the factual counterevidence to the reviewer.
+  - If an equivalent Blocking finding stays unvalidated in two consecutive assessments, stop and ask the user for direction.
+- **Non-blocking:**
+  - Investigate before you implement.
+  - If you defer the finding, record the reason and a revisit trigger.
+- **Nit:**
+  - Validate and fix it if that is practical and in scope.
+  - Otherwise, record a justified deferral and a revisit trigger.
+
+These rules apply to every disposition:
+
+- Honor the user's existing dispositions. A deferral is not acceptance without change.
+- `Review blocked` is not a passing verdict.
+- If you change the candidate, apply [Review Scope](#review-scope) to the change.
 
 ## Report
 
-Keep a reviewer-owned section in the working record, or a separate report if requested or clearer. Cite existing boundary/gate/mutation evidence rather than repeating it. Every finding gives classification, evidence, impact, path and a line where possible. Omit empty sections and dismissed hypotheses unless they explain a material decision. A clean review still gives verification and an explicit verdict. Follow-ups may describe only the delta, new verification, finding updates and revised verdict.
+- The reviewer owns one section of the working record, or a separate report if that is requested or clearer.
+- Cite the existing boundary, gate results and mutation evidence. Do not repeat them.
+- Each finding gives its class, evidence, impact and path, and a line where possible.
+- Omit empty sections. Omit a dismissed hypothesis unless it explains a material decision.
+- A clean review still gives its verification and an explicit verdict.
+- A follow-up MAY describe only the delta, the new verification, the updates to findings and the revised verdict.
 
 ```markdown
 ## Adversarial Review Report
@@ -93,16 +184,32 @@ Keep a reviewer-owned section in the working record, or a separate report if req
 <No blocking findings | N blocking findings — fix and re-review | Review blocked — reason>
 ```
 
-The main agent appends the integrity-comparison result and finding validations/dispositions. For a clean review, the comparison result suffices; do not duplicate the report or alter the reviewer-owned section.
+The main agent appends the result of the snapshot comparison, and the validation and disposition of each finding. The main agent does not alter the reviewer's section or repeat the report. For a clean review, the comparison result is enough.
 
 ## Evidence Retention
 
-Create one compact [working record](references/review-record.md) per task or cohesive group before delegating evidence work. Keep it outside the repository and disposable scratch, at the user's requested compatible location or another writable location. Temporary storage is allowed with its lifetime limitation disclosed. Link reports and evidence from that record; avoid competing summaries. The template defines required fields and additional provenance for optional reuse.
+**The working record.**
 
-Keep one authoritative accepted boundary, and retain candidate content for follow-up diffs: commit references for committed inputs, patches or equivalent snapshots for uncommitted inputs. Assign one primary mutation-evidence producer per cohesive candidate. The reviewer independently checks source/test identity, mutant and protected assertion, command/seed, actual-import provenance and behavioral outcome. Matching reliable evidence may be accepted without replay; record what was checked. Rerun affected cases when validity cannot be established, relevant inputs changed or a concrete concern needs reproduction; add a different probe when existing evidence cannot distinguish the suspected failure.
+- Create one [working record](references/review-record.md) for each task or cohesive group, before any evidence work starts.
+- Keep it outside the repository and outside every scratch copy. Use the location that the user requests, or another writable location.
+- Temporary storage is allowed. State its lifetime in the record.
+- Link reports and evidence from the record. Do not keep competing summaries.
+- Retain the candidate's content for follow-up diffs. Use commit references for committed inputs, and patches for uncommitted inputs.
 
-[AGENTS](../../../AGENTS.md#tests) requires mutation evidence for high-impact invariants; for other changes the reviewer MAY require it when ordinary tests give doubtful protection. Reverts, plausible regressions and over-restrictions are prompts for choosing useful mutants, not mandatory categories. Record the protected invariant and the relevant behavioral failure. A surviving mutant requires investigation, not automatic removal of coverage. Before coverage is removed or weakened, a mutant breaking the protected property must still fail a retained test; consolidating tests that keep the same cases and assertions needs no separate evidence for each deleted function body. Mutation runs preserve test ownership even when a mutant bypasses validation or changes routing; inert configuration alone is not isolation. Select mutations by protected invariant, not task/function counts or a target number. For consolidation requiring evidence, retained tests must reject a representative regression for each distinct property; one mutant may protect multiple assertions. A changed mutant or selected test requires an affected-case rerun. Scratch-only probe corrections do not invalidate application gates or unrelated evidence when candidate, tests, dependencies, isolation and provenance still match. If uncertain, rerun the affected evidence. Substantive repository changes still require full gates and an updated verdict.
+**Mutation evidence.** [AGENTS.md](../../../AGENTS.md#tests) says when mutation evidence is required.
 
-Evidence reuse is optional; rerunning is always an alternative. Follow the template's provenance checks for reused baselines, gates, mutants or verdicts. Identical tested content may support reuse across commit-metadata changes only for metadata-independent checks. Cosmetic reuse follows [Review Scope](#review-scope).
+- The reviewer MAY also require it when ordinary tests give doubtful protection.
+- One agent is the primary producer of mutation evidence for each candidate.
+- The reviewer checks the producer's evidence: the identity of the source and the tests, the mutant, the command, the provenance and the behavioral failure.
+- The reviewer MAY accept matching, reliable evidence without a rerun, and records what was checked.
+- Rerun the affected cases if their validity cannot be established, a relevant input changed, or a concern needs reproduction.
+- If the existing evidence cannot distinguish a suspected failure, add a different probe.
+- A surviving mutant needs investigation. It is not a reason to remove coverage.
+- If tests are consolidated, the retained tests must reject a representative regression of each distinct property.
+- A mutant that bypasses validation or changes routing must still leave the tests in control of every resource. Inert configuration alone is not isolation.
 
-At closure, archive accepted boundaries, dispositions and essential evidence under the [task rules](../../../tasks/README.md#maintaining-tasks). Every committed non-trivial change is archived there, whether it closes a recorded task or is an ad-hoc change recorded directly as closed; documentation-only changes need no record. Replace temporary links with durable artifacts before deleting essential evidence. A completion record supersedes the working summary and must not refer to it or to any other machine-local path. Preserve exact mutants, candidate/test identities, commands/seeds, import provenance and relevant failure excerpts; full passing logs and repeated tracebacks are optional. Keep raw output when needed to explain a finding. Remove disposable scratch, owned processes, edit scripts and unnecessary logs after transfer. User retention instructions take precedence; never retain secrets, ignored content, host data or copied external resources.
+**Closure.** The [task rules](../../../tasks/README.md#maintaining-tasks) own the completion record.
+
+- Preserve the exact mutants, the identities of the candidate and the tests, the commands, the provenance and the relevant failure excerpts.
+- Full passing logs and repeated tracebacks are optional. Keep raw output only if it explains a finding.
+- Never retain secrets, ignored content, host data or copies of external resources.
