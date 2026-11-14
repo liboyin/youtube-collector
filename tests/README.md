@@ -17,6 +17,12 @@
 - A scratch checkout alone does not isolate inherited environment variables, mounted host data or external services.
 - Close what a test opens. Python's context manager on an `sqlite3` connection commits but does not close it; use `contextlib.closing` or an explicit `close()`.
 
+## Network
+
+- Every test runs under the network guard in `tests/network_guard.py`, which the autouse `network_refusals` fixture in `tests/conftest.py` installs for each test and removes afterwards. Connections, datagrams and forward or reverse name lookups for anything but loopback (`127.0.0.0/8`, `::1`, `localhost`) raise `ExternalNetworkError`, an `OSError`, naming the destination; because code under test may swallow that error, any refused attempt also fails the test at teardown. A test that refuses on purpose, such as the guard's own tests, calls `network_refusals.take()`.
+- The lifecycle service installs the same guard for its whole process and logs each refusal; the `lifecycle` fixture fails the test when a service log holds one. A test that expects refusals there sets `lifecycle.expect_refusals`.
+- The guard covers Python code that uses the `socket` module. It does not cover native code that opens its own sockets, or other child processes, such as ffmpeg, Deno or the shell scripts under test, which must be given fakes or loopback endpoints instead. Use reserved destinations for tests that must be refused: `192.0.2.1` (RFC 5737) and names under `.invalid` (RFC 2606).
+
 ## Threads, servers and asynchronous work
 
 - Shared asynchronous resources and process-global doubles need per-test ownership, synchronized access, cancellation, quiescence and local accounting for late work. These guarantees hold after timeouts and failures too: a completion signal alone does not prove that callbacks or background work have stopped.

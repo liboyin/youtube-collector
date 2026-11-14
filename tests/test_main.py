@@ -18,6 +18,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import lifecycle_service
+import network_guard
 import pytest
 
 import youtube_collector.__main__ as testee
@@ -147,6 +148,7 @@ class Lifecycle:
         self.home = tmp_path / 'home'
         self.home.mkdir()
         self.processes = []
+        self.expect_refusals = False
 
     def flag(self, name):
         """Return one control file."""
@@ -155,6 +157,13 @@ class Lifecycle:
     def artifacts(self):
         """Return the media files at their final paths, which must only ever be complete."""
         return sorted(self.staging.glob('*.mp4'))
+
+    def refusals(self):
+        """Return the network guard's refusals that any service process of the test has logged."""
+        return [
+            line for log in sorted(self.tmp_path.glob('service-*.log')) for line in log.read_text().splitlines()
+            if network_guard.MARKER in line
+        ]
 
     def downloads(self):
         """Return how many downloads have started, across every process of the test."""
@@ -186,12 +195,14 @@ class Lifecycle:
         return service
 
     def close(self):
-        """Kill and reap every process, then fail if any survives."""
+        """Kill and reap every process, then fail if any survives or, unexpectedly, tried to reach beyond loopback."""
         for process in self.processes:
             if process.poll() is None:
                 process.kill()
             process.wait(WAIT_SECONDS)
         assert all(process.returncode is not None for process in self.processes)
+        refusals = self.refusals()
+        assert self.expect_refusals or not refusals, f'A service process tried to reach beyond loopback: {refusals}'
 
 
 @pytest.fixture
@@ -307,3 +318,41 @@ def test_a_stalled_api_database_keeps_the_process_alive_until_it_is_killed(lifec
     assert [path.read_bytes() for path in lifecycle.artifacts()] == [lifecycle_service.COMPLETE]
     # The request whose transaction never committed left no job behind.
     assert [entry['id'] for entry in restarted.request('GET', '/jobs')[1]['jobs']] == [job_id]
+
+
+@pytest.mark.parametrize('host', ['192.0.2.1', 'example.invalid'])
+def test_the_service_process_refuses_to_reach_beyond_loopback(lifecycle, host):
+    """The child's guard refuses a reserved address and a reserved name, and reports them for the test to fail on.
+
+    192.0.2.1 is TEST-NET-1 (RFC 5737) and .invalid a reserved name (RFC 2606), so a broken guard reaches nothing.
+    """
+    service = lifecycle.start()
+    lifecycle.flag('connect-to').write_text(f'{host} 80')
+    job = service.wait_finished(service.submit())
+    [failure] = job['failures']
+    assert network_guard.MARKER in failure['message'] and host in failure['message']
+    assert [line for line in lifecycle.refusals() if host in line], service.output()
+    lifecycle.expect_refusals = True
+
+
+@pytest.mark.parametrize('host', ['127.0.0.1', 'localhost'])
+def test_the_service_process_reaches_loopback(lifecycle, host):
+    """The child's guard lets it connect to a test-owned loopback listener, by address and by name."""
+    with socket.create_server(('127.0.0.1', 0)) as listener:
+        service = lifecycle.start()
+        lifecycle.flag('connect-to').write_text(f'{host} {listener.getsockname()[1]}')
+        job = service.wait_finished(service.submit())
+        assert (job['failures'], job['items'][0]['media']['outcome']) == ([], 'downloaded')
+        listener.settimeout(WAIT_SECONDS)
+        listener.accept()[0].close()
+    assert lifecycle.refusals() == []
+
+
+def test_lifecycle_teardown_fails_on_a_logged_refusal(tmp_path):
+    """A refusal in any service log fails the test at teardown, even if nothing else noticed it."""
+    lifecycle = Lifecycle(tmp_path)
+    (tmp_path / 'service-0.log').write_text(f'starting\n{network_guard.MARKER}: connect to (\'192.0.2.1\', 80)\n')
+    with pytest.raises(AssertionError, match='tried to reach beyond loopback'):
+        lifecycle.close()
+    lifecycle.expect_refusals = True
+    lifecycle.close()

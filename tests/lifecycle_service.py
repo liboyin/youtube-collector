@@ -1,20 +1,25 @@
 """A real service process with fake adapters, which the lifecycle tests in ``test_main.py`` start and stop.
 
 Run as ``python3 lifecycle_service.py CONTROL_DIR`` with the service's usual environment. It goes through the
-real entrypoint, replacing only the adapters and clock, so it cannot reach YouTube. Files in the control
-directory are how a test steers it from another process:
+real entrypoint, replacing only the adapters and clock, so it cannot reach YouTube, and it installs the network
+guard for its whole life, reporting each refused attempt in its output. Files in the control directory are how
+a test steers it from another process:
 
 - While ``hold-download`` exists, a download waits after writing partial bytes (``download-entered`` announces it).
 - With ``stall-api-database``, the API's database thread blocks for good inside its next transaction.
 - With ``stall-save``, the worker blocks for good while saving the outcome of a finished download.
+- With ``connect-to`` holding ``HOST PORT``, each metadata request first opens a connection there and closes it.
 
 Each stall announces itself through a ``*-stalled`` file, and each download appends a line to ``downloads``.
 """
 
+import socket
 import sys
 import threading
 import time
 from pathlib import Path
+
+import network_guard
 
 import youtube_collector
 import youtube_collector.__main__ as entrypoint
@@ -26,6 +31,7 @@ COMPLETE = b'complete media'
 # Shortened so a stalled request does not cost each test uvicorn's full 5 seconds.
 REQUEST_SHUTDOWN_SECONDS = 0.2
 POLL_SECONDS = 0.01
+CONNECT_SECONDS = 10.0
 
 
 class FakeMedia:
@@ -40,7 +46,11 @@ class FakeMedia:
         raise NotImplementedError(url)
 
     def video_info(self, url):
-        """Return metadata for the video in the URL."""
+        """Return metadata for the video in the URL, first connecting where ``connect-to`` says, if it exists."""
+        target = self.control / 'connect-to'
+        if target.exists():
+            host, port = target.read_text().split()
+            socket.create_connection((host, int(port)), timeout=CONNECT_SECONDS).close()
         video_id = url.rsplit('=', 1)[1]
         return VideoInfo(video_id, 'A video', {'id': video_id})
 
@@ -93,7 +103,8 @@ def controlled_clock(control):
 
 
 def main():
-    """Run the real entrypoint with fake adapters, first printing where the package was imported from."""
+    """Guard the process, then run the real entrypoint with fake adapters, printing where the package came from."""
+    network_guard.guard_process()
     control = Path(sys.argv[1])
     print(f'PACKAGE {youtube_collector.__file__}', flush=True)
     real_create_app = entrypoint.create_app

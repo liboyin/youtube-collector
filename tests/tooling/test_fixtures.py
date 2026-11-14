@@ -1,4 +1,4 @@
-"""Check that the shared fixtures in tests/conftest.py fail a test whose threads or handlers survive it."""
+"""Check that the shared fixtures in tests/conftest.py fail a test that reaches beyond loopback or leaks threads."""
 
 import importlib.util
 import os
@@ -9,6 +9,7 @@ import threading
 from pathlib import Path
 
 CONFTEST = Path(__file__).resolve().parents[1] / 'conftest.py'
+NETWORK_GUARD = CONFTEST.with_name('network_guard.py')
 
 
 def load_conftest():
@@ -20,8 +21,13 @@ def load_conftest():
 
 
 def run_nested(tmp_path, source):
-    """Run one test file with a copy of the shared conftest, in an owned process, and return its output."""
+    """Run one test file with copies of the shared conftest and the guard it imports, in an owned process.
+
+    Returns:
+        The process's exit status and its combined output.
+    """
     shutil.copy2(CONFTEST, tmp_path / 'conftest.py')
+    shutil.copy2(NETWORK_GUARD, tmp_path / 'network_guard.py')
     (tmp_path / 'test_nested.py').write_text(source, encoding='utf-8')
     done = subprocess.run(
         [sys.executable, '-m', 'pytest', 'test_nested.py', '--no-cov', '-q', '-p', 'no:cacheprovider',
@@ -30,6 +36,62 @@ def run_nested(tmp_path, source):
         env={'PATH': os.environ['PATH'], 'HOME': str(tmp_path), 'TMPDIR': str(tmp_path), 'LC_ALL': 'C.UTF-8'},
     )
     return done.returncode, done.stdout + done.stderr
+
+
+def test_a_swallowed_external_connection_fails_teardown(tmp_path):
+    """Code that catches the guard's error still fails its test, at teardown, naming the destination."""
+    status, output = run_nested(tmp_path, '''
+import socket
+
+
+def test_swallow():
+    try:
+        socket.create_connection(('192.0.2.1', 9), timeout=1)
+    except OSError:
+        pass
+''')
+    assert status == 1, output
+    assert 'ERROR at teardown of test_swallow' in output
+    assert 'The test tried to reach beyond loopback' in output and '192.0.2.1' in output
+
+
+def test_taken_refusals_and_loopback_pass_teardown(tmp_path):
+    """A test that takes its deliberate refusals passes, and loopback leaves nothing to take."""
+    status, output = run_nested(tmp_path, '''
+import socket
+
+
+def test_deliberate(network_refusals):
+    try:
+        socket.getaddrinfo('example.invalid', 80)
+    except OSError:
+        pass
+    assert len(network_refusals.take()) == 1
+    socket.getaddrinfo('localhost', 80)
+''')
+    assert status == 0, output
+
+
+def test_the_socket_layer_is_restored_after_each_test(tmp_path):
+    """The guard is in place during a test and gone after its teardown."""
+    status, output = run_nested(tmp_path, '''
+import socket
+
+UNGUARDED = socket.getaddrinfo
+
+
+def test_guarded():
+    assert socket.getaddrinfo is not UNGUARDED
+    assert 'connect' in vars(socket.socket)
+
+
+# Runs after the last test's function fixtures, the guard's included, have been torn down.
+def teardown_module():
+    assert socket.getaddrinfo is UNGUARDED
+    assert not {'connect', 'connect_ex', 'sendto', 'sendmsg'} & set(vars(socket.socket))
+''')
+    assert status == 0, output
+    assert '1 passed' in output
 
 
 def test_a_leaked_thread_fails_teardown(tmp_path):

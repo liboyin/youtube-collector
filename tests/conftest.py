@@ -1,12 +1,45 @@
-"""Fixtures that own the threads and loopback servers a test starts, and fail it if any survives."""
+"""Fixtures that guard every test against external connections, and own the threads and loopback servers it starts."""
 
 import threading
 from collections.abc import Callable, Iterator
 from http.server import ThreadingHTTPServer
 
+import network_guard
 import pytest
 
 JOIN_SECONDS = 10.0
+
+
+class NetworkRefusals:
+    """The connections and lookups the network guard refused during one test."""
+
+    def __init__(self) -> None:
+        """Start with none."""
+        self._messages: list[str] = []
+
+    def report(self, message: str) -> None:
+        """Record one refusal; called from any thread the test runs."""
+        self._messages.append(message)
+
+    def take(self) -> list[str]:
+        """Return the refusals so far and forget them, for a test that makes them on purpose."""
+        messages, self._messages[:] = self._messages[:], []
+        return messages
+
+
+@pytest.fixture(autouse=True)
+def network_refusals() -> Iterator[NetworkRefusals]:
+    """Guard each test against connections and lookups beyond loopback, then fail it if any was attempted.
+
+    The guard raises at the attempt, but code under test may swallow that error, so the record decides.
+    Its own patch context restores the socket layer after the check, also when the test failed.
+    """
+    refusals = NetworkRefusals()
+    with pytest.MonkeyPatch.context() as patch:
+        network_guard.NetworkGuard(refusals.report).install(patch.setattr)
+        yield refusals
+        attempts = refusals.take()
+        assert not attempts, f'The test tried to reach beyond loopback: {attempts}'
 
 
 class ThreadOwner:

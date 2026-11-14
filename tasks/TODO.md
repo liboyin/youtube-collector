@@ -8,12 +8,11 @@ Dependencies govern execution. A recorded task is not permission to combine unre
 
 The 2026-11-14 review's decisions (DESIGN C53–C60) produced T35's mechanism and T40–T52. Suggested sequence, each group small enough for the grouped-task skill:
 
-1. T50: independent and small.
-2. T35: crash and restart. Land it before the next group, which rewrites the same worker code.
-3. T40, then T41 and T42: local scratch, publication order and health. T41 and T42 depend on T40.
-4. T43, then T44: the cookie setting and stale-cookie reporting. They add `/health` fields, as T42 does, so do not run them in parallel with it.
-5. T51, then T46 and T47: the caption interface, then the contract and end-to-end tests written against the result.
-6. T49, then T25's remaining runs with it; T48 alongside T10's host checks. T52 any time after groups 3 and 5.
+1. T35: crash and restart. Land it before the next group, which rewrites the same worker code.
+2. T40, then T41 and T42: local scratch, publication order and health. T41 and T42 depend on T40.
+3. T43, then T44: the cookie setting and stale-cookie reporting. They add `/health` fields, as T42 does, so do not run them in parallel with it.
+4. T51, then T46 and T47: the caption interface, then the contract and end-to-end tests written against the result.
+5. T49, then T25's remaining runs with it; T48 alongside T10's host checks. T52 any time after groups 2 and 4.
 
 T25 needs the user's authorization for each run against real YouTube; T10 collects host checks as tasks land; T34 follows T25 and the user's orchestrator design; T14 waits for its revisit trigger. T39 stays deferred until a real run with cookies, authorized under T25, informs its backend choice (C52); T43, T44 and T51 make that run and that change easier. Hard-link validation stays in T25.
 
@@ -40,6 +39,5 @@ Application modules live in `youtube_collector/`, one module per responsibility,
 - [T47](open/T47.md) — Medium. Offline end-to-end tests of both workflows against a real service process (C58).
 - [T48](open/T48.md) — Low. Script the image checks that need no YouTube (C58).
 - [T49](open/T49.md) — Medium. A scripted, opt-in live canary against real YouTube (C58).
-- [T50](open/T50.md) — Medium. Fail any test that opens a connection beyond loopback (C58).
 - [T51](open/T51.md) — Low. Give the caption adapter one method and drop the track protocols.
 - [T52](open/T52.md) — Low. Small cleanups from the 2026-11-14 review.
