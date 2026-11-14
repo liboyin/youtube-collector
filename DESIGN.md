@@ -197,8 +197,8 @@ Failures are their own resource, separate from items, and carry everything neede
 - `url`, `video_id`, and playlist ID and title when known
 - `phase`: `expanding`, `metadata`, `media` or `captions`
 - `category`, a hint at whether resubmitting helps:
-  - `unavailable`: private, removed, members-only or geo-blocked. Permanent.
-  - `blocked`: bot check, sign-in required, or cookies rejected. Fix cookies, then resubmit.
+  - `unavailable`: private, removed, members-only or geo-blocked, which is permanent; or a scheduled premiere or live event that has not started, which resubmitting after its start fixes.
+  - `blocked`: bot check, captcha, sign-in required, rate limiting, or cookies rejected or not loadable. Fix cookies, then resubmit.
   - `network`: timeouts and connection errors. Resubmit as is.
   - `extractor`: yt-dlp failed to parse YouTube's response. Usually fixed by updating yt-dlp.
   - `filesystem`: a staging write or publication failed.

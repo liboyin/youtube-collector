@@ -8,7 +8,7 @@ Dependencies govern execution. A recorded task is not permission to combine unre
 
 The 2026-11-14 review's decisions (DESIGN C53–C60) produced T35's mechanism and T40–T52. Suggested sequence, each group small enough for the grouped-task skill:
 
-1. T45 and T50: independent and small; T45 is the one validated defect.
+1. T50: independent and small.
 2. T35: crash and restart. Land it before the next group, which rewrites the same worker code.
 3. T40, then T41 and T42: local scratch, publication order and health. T41 and T42 depend on T40.
 4. T43, then T44: the cookie setting and stale-cookie reporting. They add `/health` fields, as T42 does, so do not run them in parallel with it.
@@ -36,7 +36,6 @@ Application modules live in `youtube_collector/`, one module per responsibility,
 - [T42](open/T42.md) — High. Judge staging staleness only when the worker can touch the share (C55).
 - [T43](open/T43.md) — Medium. Name the Firefox profile with an explicit setting and report missing cookies (C56).
 - [T44](open/T44.md) — Medium. Report stale or rotated cookies (C56).
-- [T45](open/T45.md) — Medium. Categorize real yt-dlp errors correctly.
 - [T46](open/T46.md) — Medium. Adapter contract tests against the real libraries (C58).
 - [T47](open/T47.md) — Medium. Offline end-to-end tests of both workflows against a real service process (C58).
 - [T48](open/T48.md) — Low. Script the image checks that need no YouTube (C58).
