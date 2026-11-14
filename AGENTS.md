@@ -4,6 +4,7 @@ This file owns repository-wide working principles and the standards every change
 
 - **AGENTS.md:** working principles and required standards.
 - **[DESIGN.md](DESIGN.md):** product requirements, architecture, product contracts, design rationale and accepted user decisions.
+- **[STYLE.md](STYLE.md):** rules for writing documentation, and the glossary of process terms.
 - **[README.md](README.md):** project overview, and build, run, configuration and test procedures, including how the gates run.
 - **[tests/README.md](tests/README.md):** conventions for writing tests.
 - **[tasks/](tasks/):** task state and completion records; [tasks/README.md](tasks/README.md) owns its rules.
@@ -28,8 +29,31 @@ Link to the owning document instead of duplicating its procedure. Skills and ope
 - Before removing a layer, identify all unique behavior it carries, including copy, errors, ordering, timing, diagnostics and API-visible behavior, and give each retained behavior an explicit owner and verification.
 - Verify assumptions about languages, frameworks, libraries and services empirically or against version-appropriate documentation, and verify empirical claims before recording them. Historical evidence identifies its revision, environment, provenance and limitations, and does not certify current validation.
 - Update documentation that the change makes stale. Distinguish current behavior, accepted decisions, proposals and unverified hypotheses.
-- Markdown documentation MUST use one source line per prose paragraph; keep the line breaks Markdown structure needs, such as headings, lists, tables, blockquotes and fenced code.
+- Documentation that you add or change MUST follow [STYLE.md](STYLE.md).
 - New or changed non-test functions, methods and classes MUST have docstrings covering their purpose and any non-obvious contracts, side effects or constraints. Comments explain non-obvious reasons or trade-offs.
+
+# Governance Files
+
+The governance files are this file, [STYLE.md](STYLE.md), [tasks/README.md](tasks/README.md), [tests/README.md](tests/README.md) and the Markdown files under `.agents/skills/`.
+
+- The user MUST review the diff of every governance edit before an agent commits it.
+- Propose a governance change in the handoff. Edit a governance file only after the user agrees to the proposal.
+- If friction teaches a lesson, put the lesson in the first of these homes that works:
+  1. A tool or a test that makes the mistake impossible.
+  2. An error message at the point of failure.
+  3. A comment or `--help` text in the script concerned.
+  4. The completion record of the task where the friction occurred.
+  5. A governance file.
+- A lesson enters a governance file on its second occurrence. A lesson about safety or data loss enters at once.
+- If a tool takes over a rule, delete the rule's prose in the same change.
+- After each task group, list the governance sentences that a tool now enforces or that did not recur. The user decides which to remove.
+
+# Messages to the User
+
+- State the result first, then the decisions the user must make, then what changed.
+- Keep evidence in the committed record, and link to it from the message.
+- Put required reports, such as assumptions, deferred findings and checks performed, in a short list after the main part.
+- Follow the [wording rules](STYLE.md#wording).
 
 # Tests
 
@@ -45,7 +69,7 @@ Link to the owning document instead of duplicating its procedure. Skills and ope
 - A change is non-trivial if it could affect runtime behavior, test guarantees, build or configuration output, security, concurrency, state or data flow, or user-visible behavior. The final candidate of every non-trivial change, configuration-only ones included, MUST pass `./check-coverage.sh`, `mypy youtube_collector` and `ruff check .` in the tree being validated, as [README Testing](README.md#testing) describes. Resolve new warnings and explain accepted tooling warnings.
 - Every non-trivial change MUST pass the [review procedure](.agents/skills/adversarial-review/SKILL.md#procedure) before commit. The reviewer owns classification and verdict; the main agent owns investigation, fixes and dispositions. Commit only when no Blocking finding remains and every finding has a disposition; report deferred findings to the user, and confirm dispositions that change scope, behavior, architecture or accepted risk. Never silently discard or reclassify a finding. After non-trivial fixes, rerun the gates and obtain an updated verdict.
 - Every committed non-trivial change, whether a recorded task or an ad-hoc request, leaves a completion record in `tasks/closed/` under the [task rules](tasks/README.md#maintaining-tasks).
-- Documentation-only changes, including governance and skill instructions, and read-only assessments are exempt from the gates, formal review and a completion record. Verify their claims, references and diff instead, check that governance edits preserve accepted safeguards and authorization boundaries, and report what was checked. Documentation that tools consume as executable input or configuration is not exempt.
+- Documentation-only changes, including governance and skill instructions, and read-only assessments are exempt from the gates, formal review and a completion record. Verify their claims, references and diff instead, check that governance edits preserve accepted safeguards and authorization boundaries, and report what was checked. Governance edits still need the user's review under [Governance Files](#governance-files). Documentation that tools consume as executable input or configuration is not exempt.
 - Verify success with checks that distinguish failure: explain non-zero exits, verify absence directly, and verify rollback against the recorded pre-change state. Never report an unperformed check as passed; checks needing a Docker daemon, which the devcontainer lacks, are recorded as host checks and simulated results are labelled simulated.
 
 # Safety
