@@ -41,3 +41,5 @@ Application modules live in `youtube_collector/`, one module per responsibility,
 - [T49](open/T49.md) — Medium. A scripted, opt-in live canary against real YouTube (C58).
 - [T51](open/T51.md) — Low. Give the caption adapter one method and drop the track protocols.
 - [T52](open/T52.md) — Low. Small cleanups from the 2026-11-14 review.
+- [T55](open/T55.md) — Low. Check the task files for consistency with a test.
+- [T56](open/T56.md) — Low. Stop a nested pytest's output from making a mutation run INVALID.
