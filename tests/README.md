@@ -1,42 +1,76 @@
 # Writing tests
 
-[AGENTS.md](../AGENTS.md#tests) owns the testing principles: tests protect behavior, never reach external services or host data, and own everything they start. This file owns the conventions that apply them. [README Testing](../README.md#testing) owns how the suite and gates run.
+[AGENTS.md](../AGENTS.md#tests) owns the testing rules. This file owns the conventions that apply them. [README Testing](../README.md#testing) owns how the suite and the gates run.
 
 ## Layout and naming
 
-- Tests mirror the package: `tests/test_<module>.py` for `youtube_collector/<module>.py`. Standalone scripts outside the package, such as the review skill's references, are tested under `tests/tooling/`.
-- Import the module under test as `import youtube_collector.my_module as testee`, call it as `testee.function_name`, and patch its attributes with `patch.object(testee, 'attribute', ...)`. Standalone scripts MAY instead be loaded by file path as `testee`, with the same call and patch conventions.
-- Shared fixtures live in `conftest.py` files: `tests/conftest.py` installs the [network guard](#network) and owns test threads and loopback servers, and `tests/tooling/conftest.py` builds the owned subprocess environment for the shell-tool tests. Any copy of the suite, such as a review scratch tree, keeps both.
-- Order test functions to match the source file's function order.
-- Test names describe the protected behavior, and each test keeps a one-line docstring. Comments explain non-obvious reasons or trade-offs.
+- Tests mirror the package: `tests/test_<module>.py` tests `youtube_collector/<module>.py`.
+- Tests of standalone scripts outside the package live under `tests/tooling/`. The references of the review skill are such scripts.
+- Import the module under test as `import youtube_collector.my_module as testee`. Call it as `testee.function_name`, and patch its attributes with `patch.object(testee, 'attribute', ...)`.
+- A standalone script MAY be loaded by file path as `testee`, with the same conventions.
+- Order the test functions to match the order of the functions in the source file.
+- A test name describes the protected behavior. Each test keeps a one-line docstring.
+- Comments explain non-obvious reasons or trade-offs.
+
+Shared fixtures live in `conftest.py` files:
+
+- `tests/conftest.py` installs the [network guard](#network) and owns test threads and loopback servers.
+- `tests/tooling/conftest.py` builds the owned subprocess environment for the tests of shell tools.
 
 ## Owned state
 
-- Use test-owned state for filesystem paths, environment variables, settings and service clients; prefer fixtures such as `tmp_path` and `monkeypatch`, which own their teardown. Snapshot and restore only state the test owns.
-- Each test that needs a database uses its own SQLite file under a test-owned temporary directory.
-- Do not seed real configuration to prove non-access, and leave no files, environment variables or streams behind.
-- A scratch checkout alone does not isolate inherited environment variables, mounted host data or external services.
-- Close what a test opens. Python's context manager on an `sqlite3` connection commits but does not close it; use `contextlib.closing` or an explicit `close()`.
+- Use test-owned state for filesystem paths, environment variables, settings and service clients.
+- Prefer fixtures that own their teardown, such as `tmp_path` and `monkeypatch`.
+- Snapshot and restore only the state that the test owns.
+- Do not seed real configuration to prove that the code does not access it.
+- Leave no files, environment variables or streams behind.
+- Close what a test opens. The context manager of an `sqlite3` connection commits but does not close. Use `contextlib.closing` or an explicit `close()`.
 
 ## Network
 
-- Every test runs under the network guard in `tests/network_guard.py`, which the autouse `network_refusals` fixture in `tests/conftest.py` installs for each test and removes afterwards. Connections, datagrams and forward or reverse name lookups for anything but loopback (`127.0.0.0/8`, `::1`, `localhost`) raise `ExternalNetworkError`, an `OSError`, naming the destination; because code under test may swallow that error, any refused attempt also fails the test at teardown. A test that refuses on purpose, such as the guard's own tests, calls `network_refusals.take()`; where an assertion can fail before that call, it takes them in a `finally`, so that the failed assertion stays the test's only failure instead of also failing teardown.
-- The lifecycle service installs the same guard for its whole process and logs each refusal; the `lifecycle` fixture fails the test when a service log holds one. A test that expects refusals there sets `lifecycle.expect_refusals`.
-- The guard covers Python code that uses the `socket` module. It does not cover native code that opens its own sockets, or other child processes, such as ffmpeg, Deno or the shell scripts under test, which must be given fakes or loopback endpoints instead. Use reserved destinations for tests that must be refused: `192.0.2.1` (RFC 5737) and names under `.invalid` (RFC 2606). They reach nothing even when the guard is broken, as under a mutant of the guard, which otherwise sends their lookups to the system resolver.
+**The guard.** Every test runs under the network guard in `tests/network_guard.py`.
+
+- The autouse fixture `network_refusals` in `tests/conftest.py` installs the guard for each test and removes it afterwards.
+- The guard allows only loopback: `127.0.0.0/8`, `::1` and `localhost`.
+- For any other destination, a connection, a datagram or a name lookup raises `ExternalNetworkError`, which is an `OSError`. The error names the destination.
+- The code under test may swallow that error. Therefore each refused attempt also fails the test at teardown.
+
+**Deliberate refusals.**
+
+- A test that refuses on purpose calls `network_refusals.take()`. The guard's own tests do this.
+- If an assertion can fail before that call, call it in a `finally`. The failed assertion then stays the test's only failure.
+- For a test that must be refused, use a reserved destination: `192.0.2.1` (RFC 5737) or a name under `.invalid` (RFC 2606). These reach nothing even when the guard is broken, as under a mutant of the guard.
+
+**The lifecycle service.**
+
+- The lifecycle service installs the same guard for its whole process and logs each refusal.
+- The `lifecycle` fixture fails the test if a service log holds a refusal.
+- A test that expects refusals there sets `lifecycle.expect_refusals`.
+
+**Limits of the guard.**
+
+- The guard covers Python code that uses the `socket` module.
+- It does not cover native code that opens its own sockets.
+- It does not cover other child processes, such as ffmpeg, Deno or the shell scripts under test. Give these a fake or a loopback endpoint.
 
 ## Threads, servers and asynchronous work
 
-- Shared asynchronous resources and process-global doubles need per-test ownership, synchronized access, cancellation, quiescence and local accounting for late work. These guarantees hold after timeouts and failures too: a completion signal alone does not prove that callbacks or background work have stopped.
-- Start background threads with the `owned_threads` fixture and loopback servers with `loopback_server`, both in `tests/conftest.py`. Their teardown stops and joins everything within a bound, also after a failure, including a server's request handlers, and fails the test if anything survives. Where a fixture cannot own a thread, such as one the application's own lifespan starts, stop and join it in a `finally` and assert that it is not alive. Tests that need a real service process use the `lifecycle` fixture in `tests/test_main.py`, whose teardown kills and reaps every child.
-- Tests run in random order under `pytest-randomly`, so order-dependent state is a defect, not a flake.
+- Start background threads with the `owned_threads` fixture, and loopback servers with `loopback_server`. Both are in `tests/conftest.py`.
+- The teardown of these fixtures stops and joins everything within a bound, also after a failure. This includes a server's request handlers. The teardown fails the test if anything survives.
+- If a fixture cannot own a thread, stop and join the thread in a `finally`, and assert that it is not alive. A thread that the application's own lifespan starts is an example.
+- A test that needs a real service process uses the `lifecycle` fixture in `tests/test_main.py`. Its teardown kills and reaps every child.
+- A shared asynchronous resource or a process-global double needs five things: ownership by one test, synchronized access, cancellation, quiescence, and local accounting for late work.
+- These guarantees hold after timeouts and failures too. A completion signal alone does not prove that callbacks or background work have stopped.
 
 ## Time
 
-- Prefer controlled inputs, injected clocks and explicit completion signals over elapsed-time waits.
-- When a property can only be falsified by time, such as a thread-safe wake-up or a capped wait, a bounded wall-time assertion is permitted. Bound it well below the duration the defect would cause, explain the bound in a comment, and pair it with explicit completion signals wherever they exist.
-- An injected clock must never drive a deadline that is actually waited out on a real clock, as asyncio's waits are: a clock that does not advance in real time makes that wait endless.
+- If only time can falsify a property, a bounded wall-time assertion is permitted. A thread-safe wake-up and a capped wait are examples.
+- Bound the assertion well below the duration that the defect would cause, and explain the bound in a comment.
+- Pair the assertion with explicit completion signals wherever they exist.
+- An injected clock must never drive a deadline that the code waits out on a real clock, as asyncio's waits do. A clock that does not advance in real time makes that wait endless.
 
 ## Coverage
 
-- `check-coverage.sh` owns the executable coverage policy: statement and branch coverage each reach the threshold for every measured file and for the project.
-- An exclusion needs a narrow rationale and an end-to-end smoke check, validated whenever the exclusion changes. Directory location alone does not justify excluding application logic. Record unperformed manual checks as limitations.
+- An exclusion from coverage needs a narrow rationale and an end-to-end smoke check. Validate the check whenever the exclusion changes.
+- The location of a directory alone does not justify the exclusion of application logic.
+- Record each manual check that was not performed as a limitation.

@@ -1,36 +1,84 @@
-This file owns repository-wide working principles and the standards every change must meet. All agents MUST follow them and explicit user instructions; higher-priority platform instructions prevail. CAPITALIZED requirement words have the meanings defined by BCP 14 (RFC 2119 and RFC 8174).
+This file owns the working principles of this repository and the standards that every change must meet.
+
+- All agents MUST follow this file and the user's explicit instructions.
+- Platform instructions with a higher priority prevail.
+- The capitalized requirement words, such as MUST and MAY, have the meanings that BCP 14 (RFC 2119 and RFC 8174) defines.
+- [STYLE.md](STYLE.md#glossary) defines the process terms.
 
 # Document Boundaries
 
+Each document owns one subject:
+
 - **AGENTS.md:** working principles and required standards.
-- **[DESIGN.md](DESIGN.md):** product requirements, architecture, product contracts, design rationale and accepted user decisions.
+- **[DESIGN.md](DESIGN.md):** product requirements, architecture, product contracts, design rationale and the user's accepted decisions.
 - **[STYLE.md](STYLE.md):** rules for writing documentation, and the glossary of process terms.
-- **[README.md](README.md):** project overview, and build, run, configuration and test procedures, including how the gates run.
+- **[README.md](README.md):** the project overview, and the procedures to build, run, configure and test. This includes how the gates run.
 - **[tests/README.md](tests/README.md):** conventions for writing tests.
-- **[tasks/](tasks/):** task state and completion records; [tasks/README.md](tasks/README.md) owns its rules.
-- **[Adversarial review skill](.agents/skills/adversarial-review/SKILL.md):** how review is conducted, including mutation evidence and evidence retention.
+- **[tasks/](tasks/):** task state and completion records. [tasks/README.md](tasks/README.md) owns its rules.
+- **[Adversarial review skill](.agents/skills/adversarial-review/SKILL.md):** how a review runs, including mutation evidence and evidence retention.
 - **[Grouped task execution skill](.agents/skills/grouped-task-execution/SKILL.md):** the recommended workflow for a group of related tasks, unless the user chooses another.
 
-Link to the owning document instead of duplicating its procedure. Skills and operational documents implement these standards and do not override them, including the safety and ownership rules here. Only DESIGN's recorded decisions authorize product changes; proposals in tasks or reviews do not. If documents disagree, follow the owning document, and confirm any unresolved material conflict before dependent work.
+These rules settle conflicts between documents:
+
+- Skills and operational documents implement these standards. They do not override them, and they never override the safety rules or the ownership rules in this file.
+- Only the decisions recorded in DESIGN authorize a product change. A proposal in a task or a review does not.
+- If documents disagree, follow the owning document.
+- If a material conflict stays unresolved, confirm it with the user before dependent work.
 
 # Scope and Decisions
 
-- If not running in a Docker container, stop and confirm with the user before continuing. The repository assumes its own devcontainer (`.devcontainer/`) with harness permissions set to Full Access or bypass; under a more restrictive harness, follow its enforced policy and report the mismatch.
-- Read the relevant code and documentation, and inspect repository status, before editing.
-- Each change MUST have a boundary: intent, dependencies, non-goals, validation and done criteria. Revalidate written tasks against the code; do not implement them mechanically or broaden their material scope unilaterally.
-- State assumptions. Confirm unresolved choices that materially affect scope, architecture, dataflow, correctness, security or user-visible behavior before dependent work, and continue independent work meanwhile. Non-material assumptions MAY be made when repository evidence supports them and they preserve the requested outcome; name each, with its evidence and effect, in the handoff.
-- Accepted decisions and user authorization persist; do not ask again about settled choices. Record a superseding decision and its reasoning before committing the affected change.
-- The project is developed on several machines, which share only the Git repository. Boundaries, decisions, open review findings and completion evidence MUST live in committed files. Working records, session scratch, agent memory and tool history are machine-local: committed files MUST NOT refer to them by path, and anything every machine needs is promoted into the document that owns it.
+**Environment.**
+
+- If you are not running in a Docker container, stop and confirm with the user before you continue.
+- The repository assumes its own devcontainer (`.devcontainer/`), with harness permissions set to Full Access or bypass.
+- If the harness is more restrictive, follow its enforced policy and report the mismatch.
+
+**Before a change.**
+
+- Read the relevant code and documentation, and inspect the repository status, before you edit.
+- Each change MUST have a boundary: its intent, dependencies, non-goals, validation and done criteria.
+- Revalidate a written task against the code. Do not implement it mechanically, and do not broaden its material scope on your own.
+
+**Assumptions and decisions.**
+
+- State your assumptions.
+- A choice is material if it affects scope, architecture, dataflow, correctness, security or user-visible behavior.
+- Confirm an unresolved material choice with the user before dependent work. Continue independent work meanwhile.
+- You MAY make a non-material assumption if repository evidence supports it and it preserves the requested outcome. Name each one in the handoff, with its evidence and its effect.
+- Accepted decisions and the user's authorization persist. Do not ask again about a settled choice.
+- Record a superseding decision and its reasoning before you commit the affected change.
+
+**Several machines.** The project is developed on several machines, which share only the Git repository.
+
+- Boundaries, decisions, open review findings and completion evidence MUST live in committed files.
+- Working records, session scratch, agent memory and tool history are machine-local. Committed files MUST NOT refer to them by path.
+- If every machine needs an item, move it into the document that owns it.
 
 # Design and Documentation
 
-- Prefer the simplest cohesive implementation within the assigned scope. Give each function, class and module a clear responsibility; prefer pure logic, isolated side effects and minimal mocking over unnecessary abstractions.
-- Respect lint limits without splitting cohesive code solely for length. A narrow exception explains the responsibility or invariant it preserves; avoid blanket disables, `Any` and `type: ignore`.
-- Before removing a layer, identify all unique behavior it carries, including copy, errors, ordering, timing, diagnostics and API-visible behavior, and give each retained behavior an explicit owner and verification.
-- Verify assumptions about languages, frameworks, libraries and services empirically or against version-appropriate documentation, and verify empirical claims before recording them. Historical evidence identifies its revision, environment, provenance and limitations, and does not certify current validation.
-- Update documentation that the change makes stale. Distinguish current behavior, accepted decisions, proposals and unverified hypotheses.
+**Design.**
+
+- Prefer the simplest cohesive implementation within the assigned scope.
+- Give each function, class and module one clear responsibility.
+- Prefer pure logic, isolated side effects and minimal mocking over unnecessary abstractions.
+- Respect the lint limits, but do not split cohesive code only for length.
+- A lint exception must be narrow, and it must explain the responsibility or invariant that it preserves. Avoid blanket disables, `Any` and `type: ignore`.
+- Before you remove a layer, identify all unique behavior that it carries. This includes copy, errors, ordering, timing, diagnostics and API-visible behavior.
+- Give each behavior that you retain an explicit owner and a verification.
+
+**Facts.**
+
+- Verify assumptions about languages, frameworks, libraries and services by experiment, or against documentation for the version in use.
+- Verify an empirical claim before you record it.
+- Historical evidence states its revision, environment, provenance and limitations. It does not certify current validation.
+
+**Documentation.**
+
+- Update the documentation that the change makes stale.
+- Distinguish current behavior, accepted decisions, proposals and unverified hypotheses.
 - Documentation that you add or change MUST follow [STYLE.md](STYLE.md).
-- New or changed non-test functions, methods and classes MUST have docstrings covering their purpose and any non-obvious contracts, side effects or constraints. Comments explain non-obvious reasons or trade-offs.
+- New or changed non-test functions, methods and classes MUST have docstrings. A docstring covers the purpose and any non-obvious contracts, side effects or constraints.
+- Comments explain non-obvious reasons or trade-offs.
 
 # Governance Files
 
@@ -57,32 +105,113 @@ The governance files are this file, [STYLE.md](STYLE.md), [tasks/README.md](task
 
 # Tests
 
-- Tests MUST protect a behavior or invariant and fail when it breaks. Prefer controlled inputs, injected clocks and explicit completion signals; bounded wall-time checks are allowed only where time alone can falsify the property. [tests/README.md](tests/README.md) owns the conventions.
-- Automated tests MUST NOT reach external services such as YouTube, through any client. Every read and write by a test or the code under test stays in test-owned temporary directories, on failure paths too, including each test's own SQLite database; environment variables, settings and other process state a test changes are test-owned and restored. Reading source, installed dependencies and static fixtures is permitted; it is not permission to access host data or real configuration.
-- Background work a test starts, directly or through the code under test, MUST be stopped and accounted for before the test ends, also after failures and timeouts. Tests run in random order, so order-dependent state is a defect.
-- High-impact invariants, such as protection against data loss, security violations, incorrect acknowledgement and concurrency or resource-ownership failures, MUST have targeted mutation evidence from an isolated scratch copy that preserves test ownership. Before removing or weakening coverage, show that a retained test still fails when the protected property breaks. The [review skill](.agents/skills/adversarial-review/SKILL.md#evidence-retention) and its [scratch-testing recipe](.agents/skills/adversarial-review/references/scratch-testing.md) own the method.
-- `check-coverage.sh` owns the coverage policy; statement and branch coverage MUST each reach its threshold for every measured file and for the project. Changes to the policy are planned as tasks.
+[tests/README.md](tests/README.md) owns the conventions that apply these rules.
+
+**What a test protects.**
+
+- A test MUST protect a behavior or an invariant, and it MUST fail when that breaks.
+- Prefer controlled inputs, injected clocks and explicit completion signals.
+- A bounded wall-time check is allowed only where time alone can falsify the property.
+
+**Isolation.**
+
+- Automated tests MUST NOT reach external services, such as YouTube, through any client.
+- Every read and write by a test, or by the code under test, stays in test-owned temporary directories. This holds on failure paths too, and for each test's own SQLite database.
+- Environment variables, settings and other process state that a test changes are test-owned. The test restores them.
+- A test may read source, installed dependencies and static fixtures. This is not permission to access host data or real configuration.
+- Background work that a test starts, directly or through the code under test, MUST be stopped and accounted for before the test ends. This holds after failures and timeouts too.
+- Tests run in random order, so order-dependent state is a defect.
+
+**Mutation evidence.**
+
+- A high-impact invariant MUST have targeted mutation evidence from an isolated scratch copy that preserves test ownership.
+- High-impact invariants include protection against data loss, security violations, incorrect acknowledgement, and failures of concurrency or resource ownership.
+- Before you remove or weaken coverage, show that a retained test still fails when the protected property breaks.
+- The [review skill](.agents/skills/adversarial-review/SKILL.md#evidence-retention) and its [scratch-testing recipe](.agents/skills/adversarial-review/references/scratch-testing.md) own the method.
+
+**Coverage.**
+
+- `check-coverage.sh` owns the coverage policy.
+- Statement coverage and branch coverage MUST each reach the threshold, for every measured file and for the project.
+- Plan a change to the policy as a task.
 
 # Validation and Review
 
-- Before implementing, establish a passing baseline for the relevant checks on the starting state, using the full gates when the scope is broad or uncertain. Fix a failing baseline in a separate, authorized change first.
-- A change is non-trivial if it could affect runtime behavior, test guarantees, build or configuration output, security, concurrency, state or data flow, or user-visible behavior. The final candidate of every non-trivial change, configuration-only ones included, MUST pass `./check-coverage.sh`, `mypy youtube_collector` and `ruff check .` in the tree being validated, as [README Testing](README.md#testing) describes. Resolve new warnings and explain accepted tooling warnings.
-- Every non-trivial change MUST pass the [review procedure](.agents/skills/adversarial-review/SKILL.md#procedure) before commit. The reviewer owns classification and verdict; the main agent owns investigation, fixes and dispositions. Commit only when no Blocking finding remains and every finding has a disposition; report deferred findings to the user, and confirm dispositions that change scope, behavior, architecture or accepted risk. Never silently discard or reclassify a finding. After non-trivial fixes, rerun the gates and obtain an updated verdict.
-- Every committed non-trivial change, whether a recorded task or an ad-hoc request, leaves a completion record in `tasks/closed/` under the [task rules](tasks/README.md#maintaining-tasks).
-- Documentation-only changes, including governance and skill instructions, and read-only assessments are exempt from the gates, formal review and a completion record. Verify their claims, references and diff instead, check that governance edits preserve accepted safeguards and authorization boundaries, and report what was checked. Governance edits still need the user's review under [Governance Files](#governance-files). Documentation that tools consume as executable input or configuration is not exempt.
-- Verify success with checks that distinguish failure: explain non-zero exits, verify absence directly, and verify rollback against the recorded pre-change state. Never report an unperformed check as passed; checks needing a Docker daemon, which the devcontainer lacks, are recorded as host checks and simulated results are labelled simulated.
+**Non-trivial changes.** A change is non-trivial if it could affect any of these: runtime behavior, test guarantees, build or configuration output, security, concurrency, state or data flow, or user-visible behavior.
+
+**Baseline.**
+
+- Before you implement, establish a passing baseline for the relevant checks on the starting state.
+- Use the full gates if the scope is broad or uncertain.
+- If the baseline fails, fix it first in a separate, authorized change.
+
+**Gates.**
+
+- The final candidate of every non-trivial change MUST pass the three gates in the tree that is validated. [README Testing](README.md#testing) describes them.
+- The gates are `./check-coverage.sh`, `mypy youtube_collector` and `ruff check .`.
+- A configuration-only change needs the gates too.
+- Resolve new warnings, and explain each accepted tooling warning.
+
+**Review.**
+
+- Every non-trivial change MUST pass the [review procedure](.agents/skills/adversarial-review/SKILL.md#procedure) before the commit.
+- The reviewer owns the classification and the verdict. The main agent owns the investigation, the fixes and the dispositions.
+- Commit only when no Blocking finding remains and every finding has a disposition.
+- Report deferred findings to the user.
+- Confirm with the user each disposition that changes scope, behavior, architecture or accepted risk.
+- Never discard or reclassify a finding silently.
+- After a non-trivial fix, run the gates again and obtain an updated verdict.
+
+**Completion record.** Every committed non-trivial change leaves a completion record in `tasks/closed/`, under the [task rules](tasks/README.md#maintaining-tasks). This holds for a recorded task and for an ad-hoc request.
+
+**Exemptions.** Documentation-only changes and read-only assessments are exempt from the gates, the formal review and the completion record. Governance files and skill instructions count as documentation.
+
+- Instead, verify the claims, the references and the diff, and report what you checked.
+- For a governance edit, check that it preserves the accepted safeguards and authorization boundaries. The edit also needs the user's review under [Governance Files](#governance-files).
+- Documentation that a tool consumes as executable input or configuration is not exempt.
+
+**Honest verification.**
+
+- Verify success with checks that distinguish failure.
+- Explain each non-zero exit.
+- Verify absence directly.
+- Verify a rollback against the recorded state from before the change.
+- Never report an unperformed check as passed.
+- The devcontainer has no Docker daemon. Record a check that needs one as a host check, and label a simulated result as simulated.
 
 # Safety
 
-- Never point a development or test run at real host data: the staging share behind `ASSETS_DIR`, the browser profile behind `FIREFOX_PROFILE_DIR`, or the service's SQLite volume. NEVER read or copy that browser profile; it holds live session cookies. The opt-in REAL DATA devcontainer (`.devcontainer/real-data/`) mounts the share and the profile; every rule here still applies inside it, and opening it authorizes no run.
-- Running the service or any download code against real YouTube, including a manual end-to-end check, requires the user's explicit authorization for that run. Such traffic can use the user's cookies and risks their account being flagged.
-- `docker compose down -v` destroys the volume holding queued jobs and failure records, so it requires explicit user authorization.
-- `.env` contains no secrets. It is git-ignored; do not commit it.
-- Clean up owned processes and disposable artifacts, preserving the [retained review evidence](.agents/skills/adversarial-review/SKILL.md#evidence-retention) and requested deliverables. Identify owned PIDs before using `kill`; NEVER use `pkill -f`.
-- Before finishing, check for changes to this file and to the change's boundary, reread changed guidance, and verify the result against its current requirements.
+**Host data.**
+
+- Never point a development run or a test run at real host data.
+- Real host data is the staging share behind `ASSETS_DIR`, the browser profile behind `FIREFOX_PROFILE_DIR`, and the service's SQLite volume.
+- NEVER read or copy that browser profile. It holds live session cookies.
+- The opt-in REAL DATA devcontainer (`.devcontainer/real-data/`) mounts the share and the profile. Every rule here still applies inside it, and opening it authorizes no run.
+- `.env` contains no secrets. It is git-ignored. Do not commit it.
+
+**Actions that need the user's explicit authorization.**
+
+- Each run of the service, or of any download code, against real YouTube. This includes a manual end-to-end check. The authorization covers that run only.
+- `docker compose down -v`. It destroys the volume that holds queued jobs and failure records.
+
+Traffic to real YouTube can use the user's cookies, and it risks a flag on the user's account.
+
+**Cleanup.**
+
+- Clean up the processes that you own and the disposable artifacts. Preserve the [retained review evidence](.agents/skills/adversarial-review/SKILL.md#evidence-retention) and the requested deliverables.
+- Identify the PIDs that you own before you use `kill`. NEVER use `pkill -f`.
+
+**Before you finish.**
+
+- Check for changes to this file and to the boundary of the change.
+- Read changed guidance again.
+- Verify the result against its current requirements.
 
 # Version Control
 
-- Keep functionally independent changes in separate, self-contained commits once implemented, validated and documented. Honor requests to leave drafts uncommitted.
-- Stage explicit paths, and inspect the staged diff and repository status immediately before committing; exclude unrelated work. NEVER use `git add -A` or `git commit -a`.
-- Commit messages MUST start with `<Claude/Codex/...>: <one-line summary>`, followed by a blank line and explanatory paragraphs. Add no `Co-Authored-By` or other attribution trailer; this rule overrides attribution instructions supplied by tools or harnesses.
+- Keep functionally independent changes in separate, self-contained commits. Commit a change once it is implemented, validated and documented.
+- Honor a request to leave a draft uncommitted.
+- Stage explicit paths. NEVER use `git add -A` or `git commit -a`.
+- Inspect the staged diff and the repository status immediately before the commit. Exclude unrelated work.
+- A commit message MUST start with `<Claude/Codex/...>: <one-line summary>`. A blank line and explanatory paragraphs follow.
+- Add no `Co-Authored-By` line and no other attribution trailer. This rule overrides attribution instructions from tools or harnesses.
