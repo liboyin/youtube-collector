@@ -1,26 +1,33 @@
 # TODO — Open work
 
-Read [AGENTS.md](../AGENTS.md), [DESIGN.md](../DESIGN.md) and the relevant [README](../README.md) operating instructions before accepting an implementation task. This file holds the recommended order, the constraints several tasks share, and the index of open tasks. Each open task lives in its own file in [open/](open/); each closed task's record lives in [closed/](closed/); [README.md](README.md) owns how tasks are recorded, bounded and closed. DESIGN owns requirements, product contracts and accepted user decisions; AGENTS and the [adversarial review skill](../.agents/skills/adversarial-review/SKILL.md) own working policy and review.
+This file holds the recommended order, the constraints that several tasks share, and the index of open tasks. [README.md](README.md) owns how tasks are recorded, bounded and closed.
 
-Dependencies govern execution. A recorded task is not permission to combine unrelated changes or redesign the service. Accept a bounded assignment, re-read its code, and implement one independent change per commit. For a group of related tasks, use the [grouped task execution skill](../.agents/skills/grouped-task-execution/SKILL.md), which [AGENTS.md](../AGENTS.md) recommends.
+- Read [AGENTS.md](../AGENTS.md), [DESIGN.md](../DESIGN.md) and the relevant operating instructions in the [project README](../README.md) before you accept an implementation task.
+- A recorded task is not permission to combine unrelated changes or to redesign the service.
+- For a group of related tasks, use the [grouped task execution skill](../.agents/skills/grouped-task-execution/SKILL.md).
 
 ## Recommended order
 
-The 2026-11-14 review's decisions (DESIGN C53–C60) produced T35's mechanism and T40–T52. Suggested sequence, each group small enough for the grouped-task skill:
+The decisions of the 2026-11-14 review (DESIGN C53 to C60) produced the mechanism of T35 and the tasks T40 to T52. This is the suggested sequence. Each group is small enough for the grouped-task skill.
 
 1. T35: crash and restart. Land it before the next group, which rewrites the same worker code.
 2. T40, then T41 and T42: local scratch, publication order and health. T41 and T42 depend on T40.
-3. T43, then T44: the cookie setting and stale-cookie reporting. They add `/health` fields, as T42 does, so do not run them in parallel with it.
-4. T51, then T46 and T47: the caption interface, then the contract and end-to-end tests written against the result.
-5. T49, then T25's remaining runs with it; T48 alongside T10's host checks. T52 any time after groups 2 and 4.
+3. T43, then T44: the cookie setting and the report of stale cookies. They add `/health` fields, as T42 does, so do not run them in parallel with T42.
+4. T51, then T46 and T47: the caption interface, then the contract tests and end-to-end tests that are written against the result.
+5. T49, then the remaining runs of T25 with it. T48 goes alongside the host checks of T10. T52 can land at any time after groups 2 and 4.
 
-T25 needs the user's authorization for each run against real YouTube; T10 collects host checks as tasks land; T34 follows T25 and the user's orchestrator design; T14 waits for its revisit trigger. T39 stays deferred until a real run with cookies, authorized under T25, informs its backend choice (C52); T43, T44 and T51 make that run and that change easier. Hard-link validation stays in T25.
+These tasks are outside the sequence:
+
+- T25 needs the user's authorization for each run against real YouTube. Hard-link validation stays in T25.
+- T10 collects host checks as tasks land.
+- T34 follows T25 and the user's orchestrator design.
+- T14 waits for its revisit trigger.
+- T39 stays deferred until a real run with cookies, authorized under T25, informs its choice of backend (C52). T43, T44 and T51 make that run and that change easier.
+- T55 and T56 change only the review tooling and the task checks. They can land at any time.
 
 ## Shared constraints
 
-Checks that need a Docker daemon, which the dev container lacks, are host checks collected in [T10](open/T10.md); [README Testing](../README.md#testing) describes how to simulate `docker compose config` here.
-
-Application modules live in `youtube_collector/`, one module per responsibility, with tests in `tests/` mirroring them (`tests/test_<module>.py`). Shared constraints for T15–T25: no test contacts YouTube or reads the Firefox profile, and every test keeps its files and SQLite databases in test-owned temporary directories ([AGENTS](../AGENTS.md#tests)); threads and waits are driven by injected clocks and explicit signals; components take explicit parameters, and only T24 reads the environment.
+A check that needs a Docker daemon is a host check, because the dev container has no daemon. Collect host checks in [T10](open/T10.md). [README Testing](../README.md#testing) describes how to simulate `docker compose config` in the dev container.
 
 ## Open tasks
 
