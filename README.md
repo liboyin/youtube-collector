@@ -239,6 +239,14 @@ ruff check .
 - It checks the rules of [STYLE.md](STYLE.md) that need no judgment, such as the sentence limits.
 - In `DESIGN.md`, `project-review-2026-11-10.md` and the task files, it checks the style of changed lines only.
 - It prints each problem as `path:line: rule: message`.
+- A pass means that the local documentation references resolve. It does not mean that the documents agree with each other.
+
+**The reference report.** It is optional. Use it before you rename or move a file or a heading.
+
+- Run `./check_docs.py --references AGENTS.md` to list each line that links to that file or to one of its headings.
+- Run `./check_docs.py --references 'AGENTS.md#governance-files'` to list only the links to that heading.
+- Write the path from the root of the repository.
+- The report runs no check. It lists Markdown links only, not paths in code or in plain text.
 
 **Tool configuration.** `pyproject.toml` configures the tools.
 

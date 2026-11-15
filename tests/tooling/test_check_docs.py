@@ -431,3 +431,167 @@ def test_the_script_runs_as_a_program(monkeypatch, capsys):
         runpy.run_path(str(SCRIPT), run_name='__main__')
     assert raised.value.code == 0
     assert 'usage' in capsys.readouterr().out
+
+
+def report(repo, capsys, target):
+    """Run the reference report; return the status and the lines of its output."""
+    status = testee.main(['--repo', str(repo.root), '--references', target])
+    return status, capsys.readouterr().out.splitlines()
+
+
+def test_a_file_query_finds_links_to_the_file_and_to_its_headings(repo, capsys):
+    """Direct links, heading links and a link from the file to itself match; other targets do not."""
+    repo.write('guide.md', '# Guide\n\n## Part\n\nSee [the part](#part).\n')
+    repo.write('other.md', '# Other\n')
+    repo.write('README.md', '# Project\n\n[a](guide.md) and [b](other.md).\n\nText.\n\n[c](guide.md#part)\n')
+    assert report(repo, capsys, 'guide.md') == (0, [
+        'References to guide.md:', 'README.md:3', 'README.md:7', 'guide.md:5', '', '3 references found.'])
+
+
+def test_a_heading_query_finds_only_links_to_that_heading(repo, capsys):
+    """Links to another heading of the file, or to the file without a fragment, do not match."""
+    repo.write('guide.md', '# Guide\n\n## Part\n\n## Rest\n')
+    repo.write('README.md', '# Project\n\n[a](guide.md)\n\n[b](guide.md#part)\n\n[c](guide.md#rest)\n')
+    assert report(repo, capsys, 'guide.md#part') == (0, [
+        'References to guide.md#part:', 'README.md:5', '', '1 reference found.'])
+
+
+def test_relative_and_encoded_links_name_the_same_target(repo, capsys):
+    """Links from other directories, redundant path segments and URL encoding all resolve to the query."""
+    repo.write('docs/my guide.md', '# Guide\n\n## Über part\n')
+    repo.write('README.md', '# Project\n\n[a](docs/my%20guide.md#%C3%BCber-part)\n\n[b](<docs/my guide.md>)\n')
+    repo.write('docs/deep/note.md', '# Note\n\n[c](../my%20guide.md#über-part)\n\n[d](../../docs/./my%20guide.md)\n')
+    assert report(repo, capsys, 'docs/my guide.md')[1][1:-2] == [
+        'README.md:3', 'README.md:5', 'docs/deep/note.md:3', 'docs/deep/note.md:5']
+    assert report(repo, capsys, 'docs/../docs/my guide.md#über-part')[1] == [
+        'References to docs/my guide.md#über-part:', 'README.md:3', 'docs/deep/note.md:3', '', '2 references found.']
+
+
+def test_a_reference_link_is_reported_where_it_is_used(repo, capsys):
+    """A use of a defined label matches at its own line; the definition and an unused one do not."""
+    repo.write('guide.md', '# Guide\n')
+    repo.write('README.md', (
+        '# Project\n\nSee [the guide][g] and [G][].\n\nAlso [the guide][unknown].\n\n'
+        '[g]: guide.md\n[unused]: guide.md\n'))
+    assert report(repo, capsys, 'guide.md')[1][1:-2] == ['README.md:3']
+
+
+def test_code_gives_no_reference(repo, capsys):
+    """A link in inline code or in a code block is not a reference, and no match is a success."""
+    repo.write('guide.md', '# Guide\n')
+    repo.write('README.md', '# Project\n\nWrite `[a](guide.md)`.\n\n```\n[b](guide.md)\n```\n')
+    assert report(repo, capsys, 'guide.md') == (0, ['References to guide.md:', '', '0 references found.'])
+
+
+def test_a_line_is_reported_once_and_the_report_is_sorted(repo, capsys):
+    """Two links on one line give one result, and results are in order of path, then line number."""
+    repo.write('guide.md', '# Guide\n')
+    repo.write('b.md', '# B\n\n[x](guide.md) and [y](guide.md#guide)\n')
+    lines = ['# A', ''] + ['Text.', ''] * 4 + ['[x](guide.md)', '', '[y](guide.md)', '']
+    repo.write('a.md', '\n'.join(lines))
+    first = report(repo, capsys, 'guide.md')
+    assert first[1][1:-2] == ['a.md:11', 'a.md:13', 'b.md:3']
+    assert report(repo, capsys, 'guide.md') == first
+
+
+def test_a_directory_query_finds_links_to_that_directory_only(repo, capsys):
+    """A directory is a valid target; a link to a file in it is not a link to the directory."""
+    repo.write('docs/guide.md', '# Guide\n')
+    repo.write('README.md', '# Project\n\n[d](docs/)\n\n[g](docs/guide.md)\n')
+    assert report(repo, capsys, 'docs')[1] == ['References to docs:', 'README.md:3', '', '1 reference found.']
+
+
+@pytest.mark.parametrize(('target', 'message'), [
+    ('missing.md', 'missing.md names no file or directory in the repository'),
+    ('../outside.md', '../outside.md names no file or directory in the repository'),
+    ('#part', '#part names no file or directory in the repository'),
+    ('guide.md#missing', 'guide.md#missing names no heading in guide.md'),
+    ('docs#part', 'docs#part names no heading in docs'),
+    ('data.txt#part', 'data.txt#part names no heading in data.txt'),
+])
+def test_an_invalid_query_is_an_error(repo, capsys, target, message):
+    """A query without an existing target or heading gives status two and names the reason."""
+    repo.write('guide.md', '# Guide\n\n## Part\n')
+    repo.write('docs/note.md', '# Note\n')
+    repo.write('data.txt', '# Part\n')
+    (repo.root.parent / 'outside.md').write_text('# Outside\n', encoding='utf-8')
+    assert testee.main(['--repo', str(repo.root), '--references', target]) == 2
+    captured = capsys.readouterr()
+    assert captured.err.strip() == f'check_docs: cannot check the documentation: {message}'
+    assert captured.out == ''
+
+
+def test_an_absolute_query_is_an_error(repo, capsys):
+    """The query is a path from the repository root, so an absolute path to a file in it is rejected."""
+    repo.write('guide.md', '# Guide\n')
+    assert testee.main(['--repo', str(repo.root), '--references', str(repo.root / 'guide.md')]) == 2
+    assert 'names no file or directory in the repository' in capsys.readouterr().err
+
+
+def test_the_report_scans_the_selected_repository(repo, capsys, tmp_path, monkeypatch):
+    """With --repo, the query and the scan use that repository, not the working directory."""
+    repo.write('guide.md', '# Guide\n')
+    repo.write('README.md', '# Project\n\n[g](guide.md)\n')
+    elsewhere = tmp_path / 'elsewhere'
+    elsewhere.mkdir()
+    (elsewhere / 'guide.md').write_text('# Decoy\n\n[g](guide.md)\n', encoding='utf-8')
+    monkeypatch.chdir(elsewhere)
+    assert report(repo, capsys, 'guide.md')[1][1:-2] == ['README.md:3']
+
+
+def test_the_report_resolves_the_query_from_the_root(repo, capsys, monkeypatch):
+    """From a subdirectory, the query is still a path from the root of the repository."""
+    repo.write('docs/guide.md', '# Guide\n')
+    repo.write('README.md', '# Project\n\n[g](docs/guide.md)\n')
+    monkeypatch.chdir(repo.root / 'docs')
+    assert testee.main(['--references', 'docs/guide.md']) == 0
+    assert 'README.md:3' in capsys.readouterr().out
+    assert testee.main(['--references', 'guide.md']) == 2
+    capsys.readouterr()
+
+
+def test_symbolic_links_cannot_reach_outside_the_repository(repo, capsys):
+    """A link or a query through a symbolic link that leaves the repository is rejected, and nothing is read there."""
+    outside = repo.root.parent / 'outside'
+    outside.mkdir()
+    (outside / 'secret.md').write_bytes(b'\xff\xfe not text')
+    (repo.root / 'door').symlink_to(outside, target_is_directory=True)
+    (repo.root / 'alias.md').symlink_to(outside / 'secret.md')
+    repo.write('README.md', '# Project\n\n[s](door/secret.md#part)\n\n[t](alias.md#part)\n')
+    assert repo.check(capsys) == (1, [
+        'README.md:3: link: door/secret.md#part is not a relative path in the repository',
+        'README.md:5: link: alias.md#part is not a relative path in the repository'])
+    for target in ('door/secret.md', 'door/secret.md#part', 'alias.md', 'door'):
+        assert testee.main(['--repo', str(repo.root), '--references', target]) == 2
+        assert f'{target} names no file or directory in the repository' in capsys.readouterr().err
+
+
+def test_a_symbolic_link_inside_the_repository_names_its_target(repo, capsys):
+    """A link through an internal symbolic link is a reference to the real file, under its real name."""
+    repo.write('docs/guide.md', '# Guide\n')
+    (repo.root / 'shortcut').symlink_to('docs', target_is_directory=True)
+    repo.write('README.md', '# Project\n\n[g](shortcut/guide.md)\n')
+    assert report(repo, capsys, 'shortcut/guide.md') == (0, [
+        'References to docs/guide.md:', 'README.md:3', '', '1 reference found.'])
+
+
+def test_the_report_runs_no_check_and_changes_nothing(repo, capsys):
+    """A report succeeds in a repository with problems, and it leaves the files and the index as they were."""
+    repo.write('guide.md', '# Guide\n')
+    repo.write('README.md', '# Project\n\nBad; text with [g](guide.md) and [m](missing.md).\n')
+    repo.git('add', 'guide.md')
+    before = (repo.git('status', '--porcelain=v2'), repo.git('ls-files', '-s'), (repo.root / 'README.md').read_bytes())
+    assert report(repo, capsys, 'guide.md')[0] == 0
+    assert before == (
+        repo.git('status', '--porcelain=v2'), repo.git('ls-files', '-s'), (repo.root / 'README.md').read_bytes())
+    assert repo.check(capsys)[0] == 1
+
+
+def test_an_unreadable_file_stops_the_report(repo, capsys):
+    """A report that cannot scan every file is incomplete, so it gives status two and no result."""
+    repo.write('guide.md', '# Guide\n')
+    (repo.root / 'binary.md').write_bytes(b'\xff\xfe\x00')
+    assert testee.main(['--repo', str(repo.root), '--references', 'guide.md']) == 2
+    captured = capsys.readouterr()
+    assert 'binary.md is not UTF-8 text' in captured.err
+    assert captured.out == ''

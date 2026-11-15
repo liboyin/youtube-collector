@@ -13,6 +13,10 @@ Style: the rules of STYLE.md that need no judgment. A list item is checked as an
 for each sentence) and other prose as a description (35 words). Code, tables, headings, block quotes and
 YAML front matter are exempt. In the files that are not rewritten as a whole, only changed lines are
 checked: lines that ``git diff HEAD`` adds, and every line of an untracked file.
+
+With ``--references``, it runs no check. It lists each line that links to a file, a directory or a
+heading, for example ``--references AGENTS.md`` or ``--references 'AGENTS.md#governance-files'``. The
+path is relative to the root of the repository. A file query includes the links to its headings.
 """
 
 import argparse
@@ -153,17 +157,58 @@ def anchors(text: str) -> set[str]:
     return result
 
 
-def link_problem(repo: Path, name: str, link: str) -> str | None:
-    """Return what is wrong with one link destination in the file ``name``, or None.
+def links(text: str) -> list[tuple[int, str, str]]:
+    """Return each link of a Markdown text as its line, its kind and its value.
 
-    A destination with a URL scheme is not checked.
+    The kinds are ``inline`` for an inline link, ``definition`` for a link definition, ``reference``
+    for a use of a defined label and ``undefined`` for a use of a label that has no definition. The
+    value is the destination, or the label for ``undefined``. A reference carries the destination of
+    the first definition of its label. A link in a code block or in inline code is not a link.
+    """
+    lines = [(number, _CODE.sub('', line)) for number, kind, line in classify(text) if kind != 'skip']
+    definitions: dict[str, str] = {}
+    for _, line in lines:
+        if match := _DEFINITION.match(line):
+            definitions.setdefault(match[1].lower(), match[2])
+    result = []
+    for number, line in lines:
+        if match := _DEFINITION.match(line):
+            result.append((number, 'definition', match[2]))
+            continue
+        result += [(number, 'inline', match[2]) for match in _LINK.finditer(line)]
+        for match in _REFERENCE.finditer(_LINK.sub('', line)):
+            label = (match[2] or match[1]).lower()
+            defined = label in definitions
+            result.append((number, 'reference' if defined else 'undefined', definitions[label] if defined else label))
+    return result
+
+
+def locate(repo: Path, name: str, link: str) -> tuple[Path, str, bool] | None:
+    """Return the target of a link destination in the file ``name``, or None if it is not a local link.
+
+    The result is the resolved path, the fragment and whether the destination is a relative path that
+    stays in the repository. Symbolic links are resolved first, so a link through one that leaves the
+    repository is not inside. A destination with a URL scheme and an empty destination are not local.
     """
     link = link[1:-1] if link.startswith('<') else link
     if not link or _SCHEME.match(link):
         return None
     path, _, fragment = unquote(link).partition('#')
-    target = ((repo / name).parent / path).resolve() if path else repo / name
-    if path.startswith('/') or not target.is_relative_to(repo):
+    target = ((repo / name).parent / path).resolve() if path else (repo / name).resolve()
+    return target, fragment, not path.startswith('/') and target.is_relative_to(repo)
+
+
+def link_problem(repo: Path, name: str, link: str) -> str | None:
+    """Return what is wrong with one link destination in the file ``name``, or None.
+
+    A destination with a URL scheme is not checked.
+    """
+    located = locate(repo, name, link)
+    if located is None:
+        return None
+    link = link[1:-1] if link.startswith('<') else link
+    target, fragment, inside = located
+    if not inside:
         return f'{link} is not a relative path in the repository'
     if not target.exists():
         return f'{link} does not exist'
@@ -176,22 +221,44 @@ def link_problem(repo: Path, name: str, link: str) -> str | None:
 def check_links(repo: Path, files: list[str]) -> list[Problem]:
     """Return a problem for each relative link that does not resolve inside the repository.
 
-    Inline links, link definitions and references to a definition are checked. A link in a code block
-    or in inline code is not a link.
+    Inline links, link definitions and references to a definition are checked. The destination of a
+    definition is checked once, at the definition.
     """
     problems = []
     for name in files:
-        lines = [(number, _CODE.sub('', line)) for number, kind, line in classify(read(repo, name)) if kind != 'skip']
-        definitions = {match[1].lower() for _, line in lines if (match := _DEFINITION.match(line))}
-        for number, line in lines:
-            definition = _DEFINITION.match(line)
-            links = [definition[2]] if definition else [match[2] for match in _LINK.finditer(line)]
-            found = [link_problem(repo, name, link) for link in links]
-            if not definition:
-                labels = [(match[2] or match[1]).lower() for match in _REFERENCE.finditer(_LINK.sub('', line))]
-                found += [f'[{label}] has no link definition' for label in labels if label not in definitions]
-            problems += [Problem(name, number, 'link', message) for message in found if message]
+        for number, kind, value in links(read(repo, name)):
+            if kind == 'undefined':
+                problems.append(Problem(name, number, 'link', f'[{value}] has no link definition'))
+            elif kind != 'reference' and (message := link_problem(repo, name, value)):
+                problems.append(Problem(name, number, 'link', message))
     return problems
+
+
+def references(repo: Path, files: list[str], query: str) -> tuple[str, list[tuple[str, int]]]:
+    """Return the normalized query, and the file and line of each line that links to its target.
+
+    The query is a path from the root of the repository, with an optional ``#fragment``. Without a
+    fragment, links to the target and to each of its headings match. With one, only links to that
+    heading match. A use of a defined label counts at the line of the use, and a definition does not
+    count. A line appears once, and the result is sorted.
+
+    Raises:
+        ValueError: If the query names no file or directory in the repository, or no heading in it.
+    """
+    path, _, fragment = query.partition('#')
+    target = (repo / path).resolve()
+    if not path or path.startswith('/') or not target.is_relative_to(repo) or not target.exists():
+        raise ValueError(f'{query} names no file or directory in the repository')
+    name = target.relative_to(repo).as_posix()
+    if fragment and not (target.suffix == '.md' and target.is_file() and fragment in anchors(read(repo, name))):
+        raise ValueError(f'{query} names no heading in {name}')
+    found = set()
+    for source in files:
+        for number, kind, value in links(read(repo, source)):
+            located = locate(repo, source, value) if kind in ('inline', 'reference') else None
+            if located and located[2] and located[0] == target and fragment in ('', located[1]):
+                found.add((source, number))
+    return (f'{name}#{fragment}' if fragment else name), sorted(found)
 
 
 def check_tasks(repo: Path, files: list[str]) -> list[Problem]:
@@ -267,20 +334,30 @@ def check_style(repo: Path, files: list[str], added: dict[str, set[int]], untrac
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Check the documentation of a repository and print each problem.
+    """Check the documentation of a repository and print each problem, or print a reference report.
 
     Args:
         argv: CLI arguments, defaulting to the process arguments.
 
     Returns:
         Zero when there is no problem, one when there is at least one, two when the check cannot run.
+        For a reference report: zero when it is complete, also with no match, and two otherwise.
     """
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--repo', type=Path, default=Path.cwd(), help='the repository; default: the working directory')
+    parser.add_argument('--references', metavar='TARGET', help='run no check; list the lines that link to this '
+                        'file, directory or FILE#heading, as a path from the root of the repository')
     args = parser.parse_args(argv)
     try:
         repo = Path(git(args.repo, 'rev-parse', '--show-toplevel').strip()).resolve()
         files = markdown_files(repo)
+        if args.references is not None:
+            target, found = references(repo, files, args.references)
+            print(f'References to {target}:')
+            for name, number in found:
+                print(f'{name}:{number}')
+            print(f'\n{len(found)} reference{"" if len(found) == 1 else "s"} found.')
+            return 0
         added, untracked = changed_lines(repo)
         problems = check_links(repo, files) + check_tasks(repo, files) + check_style(repo, files, added, untracked)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
