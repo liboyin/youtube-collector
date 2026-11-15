@@ -8,7 +8,7 @@ Use this template for the working record of a [review](../SKILL.md#procedure). [
 
 ## Fields
 
-- **Boundary:** a link to the accepted boundary in `tasks/open/<ID>.md`. Distinguish the existing contracts of callers from new requirements for runtime validation.
+- **Boundary:** a link to the accepted boundary, as the [task rules](../../../../tasks/README.md#two-kinds-of-work) describe. Distinguish the existing contracts of callers from new requirements for runtime validation.
 - **Target:** the starting revision and the candidate revision or range, the in-scope paths and the uncommitted inputs. For a follow-up, add the earlier target.
 - **Reviewer:** the session ID, the model and the effort. If the reviewer was replaced, add the reason and the transferred findings.
 - **Checks:** the commands, the results, a summary of the relevant environment without secrets, and the reason for the choice of baseline.

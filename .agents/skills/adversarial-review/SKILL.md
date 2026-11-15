@@ -65,7 +65,7 @@ Ask the [recorded reviewer](#reviewer-session) to read this skill and perform st
 - The base revision. Read it from the candidate with `git rev-parse HEAD`.
 - The in-scope paths, each included untracked file, and the unrelated dirty paths to ignore.
 - The purpose, in a few sentences.
-- The location of the accepted boundary, which the [task rules](../../../tasks/README.md#maintaining-tasks) place in `tasks/open/<ID>.md`.
+- The path to the accepted boundary. Under the [task rules](../../../tasks/README.md#two-kinds-of-work), this can be an open task or an ad-hoc completion record in the candidate.
 - The location of the working record that holds the evidence, and a separate report destination if you need one.
 
 These rules protect the reviewer's independence:

@@ -17,6 +17,8 @@ A mutant can reach code that the passing test never ran. For example, a mutant t
 - Before the run, inspect the failure paths and routing paths that the mutant changes.
 - The selected tests must own every side effect that the mutant can reach.
 - If a path is not owned, supply a service double or a guard. Add it to the scratch copy with `--add`.
+- When adding a probe or guard, preserve the existing test bootstrap, fixtures and hooks. This includes each `conftest.py` file.
+- If the probe intentionally changes a safeguard, record that change and contain its side effects separately.
 - An invalid hostname, synthetic credentials or temporary settings do not prevent a network attempt.
 - If you add a guard, preserve the import lifecycle under test.
 - A mutant that weakens a guard removes that guard's protection. Its probes MUST target destinations that reach nothing, as the [network conventions](../../../../tests/README.md#network) describe.

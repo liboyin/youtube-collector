@@ -94,7 +94,8 @@ The governance files are this file, [STYLE.md](STYLE.md), [tasks/README.md](task
   5. A governance file.
 - A lesson enters a governance file on its second occurrence. A lesson about safety or data loss enters at once.
 - If a tool takes over a rule, delete the rule's prose in the same change.
-- After each task group, list the governance sentences that a tool now enforces or that did not recur. The user decides which to remove.
+- After each task group, report any governance rule shown to be duplicated, superseded, or fully enforced by tooling.
+- Record the evidence in the completion record. If no rule meets these conditions, no removal proposal is needed.
 
 # Messages to the User
 
