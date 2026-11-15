@@ -27,7 +27,7 @@ Grouping does not expand authorization, and it does not settle an unresolved mat
 
 1. Resolve the integration issues.
 2. Compare the work with the plan from step 1, and record each deviation.
-3. Confirm the commit boundaries. Tightly coupled tasks MAY share one candidate and one integrated review.
+3. Confirm the commit boundaries. [Review Scope](../adversarial-review/SKILL.md#review-scope) says when tasks may share one review.
 4. Freeze the candidate and run the final gates. Isolated evidence work MAY run at the same time.
 
 These rules also apply:

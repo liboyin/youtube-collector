@@ -66,11 +66,24 @@ Compose reads these **interpolation** variables from your shell or from an optio
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `ASSETS_DIR` | `./assets` | Host directory bind-mounted as the staging area at `/workspaces/youtube-collector/assets`, by the service and the real-data dev container only. |
-| `FIREFOX_PROFILE_DIR` | `firefox_profile` (named volume) | Host Firefox profile for yt-dlp cookies, mounted read-only by the service and the real-data dev container only; set it to download private or age-gated videos. These cookies apply to media only: captions are always fetched without them ([T39](tasks/open/T39.md)). |
+| `FIREFOX_PROFILE_DIR` | `firefox_profile` (named volume) | Host Firefox profile for yt-dlp cookies. See the notes below. |
 | `APT_PROXY` | empty (none) | Optional apt caching proxy used during the image build. |
 | `PYPI_PROXY` | empty (none) | Optional PyPI proxy for every PyPI package the image installs, including the dev container's dev tools. `update-dependencies.sh` still resolves against PyPI. |
-| `BUILD_COMMON_CONTEXT` | pinned Git URL (`docker-build-common.git#v1.2.0`) | Shared build-helper source; a local clone avoids fetching that context. The build uses whatever the clone has checked out, so keep it at the tag `docker-compose.yaml` pins: an older checkout can lack helpers the Dockerfile calls, and a newer one builds with untested helpers. Check with `git -C <clone> describe --tags`. |
+| `BUILD_COMMON_CONTEXT` | pinned Git URL (`docker-build-common.git#v1.2.0`) | Shared build-helper source. See the notes below. |
 | `COLLECTOR_PORT` | `8000` | Host port the service publishes on; the container listens on 8000. The service is unauthenticated, so publish it only on a trusted LAN. The dev containers publish no port. |
+
+**`FIREFOX_PROFILE_DIR`.**
+
+- Only the service and the real-data dev container mount the profile, and they mount it read-only.
+- Set the variable to download private or age-gated videos.
+- The cookies apply to media only. Captions are always fetched without them ([T39](tasks/open/T39.md)).
+
+**`BUILD_COMMON_CONTEXT`.**
+
+- A local clone avoids the fetch of that context.
+- The build uses whatever the clone has checked out. Keep the clone at the tag that `docker-compose.yaml` pins.
+- An older checkout can lack helpers that the Dockerfile calls. A newer checkout builds with untested helpers.
+- Check the tag with `git -C <clone> describe --tags`.
 
 **Volumes.**
 
@@ -105,7 +118,14 @@ The service reads its **runtime settings** from the environment.
 | `COLLECTOR_MAX_SLEEP_DOWNLOAD` | unset | The upper bound of that range. |
 | `COLLECTOR_JOB_RETENTION_DAYS` | `7` | Days a finished job stays readable. Expired jobs are deleted when the next job is submitted. |
 | `COLLECTOR_HOST`, `COLLECTOR_PORT` | `0.0.0.0`, `8000` | Where the server listens inside the container; Compose does not pass these through. |
-| `COLLECTOR_SHUTDOWN_GRACE` | `30` | Seconds shutdown waits for the current download before abandoning it; the wait does not stop the download, which ends with the process, and restart recovery requeues it. Compose does not pass it through: keep the service's `stop_grace_period` (45 s) above it plus 5 s so that normal shutdowns finish first, and change both in `docker-compose.yaml` together. |
+| `COLLECTOR_SHUTDOWN_GRACE` | `30` | Seconds that shutdown waits for the current download before it abandons the download. See the notes below. |
+
+**`COLLECTOR_SHUTDOWN_GRACE`.**
+
+- The wait does not stop the download. The download ends with the process, and restart recovery requeues it.
+- Compose does not pass this variable through.
+- Keep the service's `stop_grace_period` (45 s) above this value plus 5 s, so that normal shutdowns finish first.
+- Change both values together in `docker-compose.yaml`.
 
 ## Running the service
 

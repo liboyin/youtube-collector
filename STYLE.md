@@ -36,13 +36,23 @@ The rules follow ASD-STE100 and ISO 24495-1 loosely. Full compliance with either
 - **Boundary:** the statement of a change's intent, dependencies, non-goals, validation and done criteria.
 - **Candidate:** the frozen set of changes that the gates and the review assess.
 - **Completion record:** the committed file in `tasks/closed/` that records a finished change and its evidence.
+- **Deferral:** the decision to leave a finding or a task open. It records a reason and a revisit trigger.
 - **Disposition:** the main agent's recorded decision on a finding: fix it, defer it, or accept it without change.
 - **Finding:** a defect that the reviewer reports. Its class is Blocking, Non-blocking or Nit.
+- **Freeze:** to stop editing a candidate, so that the gates and the review assess one fixed state.
 - **Gate:** one of the three required checks: `./check-coverage.sh`, `mypy youtube_collector` and `ruff check .`.
 - **Governance file:** a file that tells agents how to work. [AGENTS.md](AGENTS.md#governance-files) lists them.
+- **Handoff:** the main agent's final message to the user about a change.
+- **Host check:** a check that needs a Docker daemon. It runs on the host, because the devcontainer has no daemon.
 - **Main agent:** the agent that implements the change and reports to the user.
 - **Mutant:** a deliberate defect placed in a scratch copy to show that a test fails when a property breaks.
 - **Mutation evidence:** the record of mutants, the tests that ran against them, and the results.
+- **Probe:** a small experiment in a scratch copy that tests one suspected failure.
+- **Provenance:** the evidence that a result belongs to a stated revision, environment and set of files. For a scratch run, it shows that the modules came from the scratch copy.
 - **Reviewer:** the independent agent that assesses a candidate and does not edit the repository.
+- **Revisit trigger:** the event that makes an agent reconsider a deferral.
 - **Scratch copy:** a disposable copy of the candidate, outside the repository, for tests and mutants.
+- **Task group:** related tasks that one agent implements and reviews together.
+- **Test-owned:** created by a test, and removed or restored by the same test.
+- **Verdict:** the reviewer's conclusion: no blocking findings, a number of blocking findings, or `Review blocked`.
 - **Working record:** the machine-local record of evidence that the main agent keeps during a review.

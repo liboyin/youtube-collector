@@ -169,19 +169,19 @@ These rules apply to every disposition:
 ```markdown
 ## Adversarial Review Report
 
-**Target:** <candidate and scope; prior target for follow-ups>
-**Reviewer:** <agent/session, model/effort>
-**Verification:** <paths/evidence checked, probes/results; reference gates>
+**Target:** <the candidate and the scope. For a follow-up, the earlier target>
+**Reviewer:** <the session, the model and the effort>
+**Verification:** <the paths and evidence that you checked, and the probes with their results. Refer to the gates>
 **Assumptions and limitations:** <material qualifications>
-**Cleanup:** <owned scratch/process cleanup, or none created>
+**Cleanup:** <the scratch copies and processes that you cleaned up, or "none created">
 
 ### Findings
 
-1. **Blocking | Non-blocking | Nit** — `path:line`: <defect, evidence, impact; optional remedy>
+1. **<Blocking, Non-blocking or Nit>** — `path:line`: <the defect, the evidence and the impact. A remedy is optional>
 
 ### Verdict
 
-<No blocking findings | N blocking findings — fix and re-review | Review blocked — reason>
+<One of: "No blocking findings". "N blocking findings. Fix and review again". "Review blocked", with the reason>
 ```
 
 The main agent appends the result of the snapshot comparison, and the validation and disposition of each finding. The main agent does not alter the reviewer's section or repeat the report. For a clean review, the comparison result is enough.
