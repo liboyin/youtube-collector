@@ -72,13 +72,16 @@ def git(repo: Path, *arguments: str) -> str:
 
 
 def read(repo: Path, name: str) -> str:
-    """Return the text of a file in the repository.
+    """Return the text of a file after resolving its path inside the repository.
 
     Raises:
-        ValueError: If the file is not UTF-8 text.
+        ValueError: If the resolved path leaves the repository or the file is not UTF-8 text.
     """
+    target = (repo / name).resolve()
+    if not target.is_relative_to(repo.resolve()):
+        raise ValueError(f'{name} resolves outside the repository')
     try:
-        return (repo / name).read_text(encoding='utf-8')
+        return target.read_text(encoding='utf-8')
     except UnicodeDecodeError as error:
         raise ValueError(f'{name} is not UTF-8 text') from error
 

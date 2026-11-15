@@ -74,6 +74,44 @@ def repo(tmp_path, monkeypatch):
     return Repo(tmp_path / 'repo')
 
 
+@pytest.mark.parametrize('arguments', [[], ['--references', 'README.md']])
+def test_a_source_below_an_external_symlink_is_rejected_before_reading(repo, capsys, monkeypatch, arguments):
+    """Both modes reject a tracked source whose parent escapes, without reading the external fixture."""
+    repo.write('docs/guide.md', '# Guide\n')
+    repo.commit()
+    outside = repo.root.parent / 'outside'
+    (repo.root / 'docs').rename(outside)
+    (repo.root / 'docs').symlink_to(outside, target_is_directory=True)
+    (outside / 'guide.md').write_bytes(b'\xff\xfe owned external fixture')
+    reads = []
+    original = Path.read_text
+
+    def record_read(path, *args, **kwargs):
+        """Observe content reads without blocking them, including reads by a broken containment check."""
+        reads.append(path.resolve())
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'read_text', record_read)
+    status = testee.main(['--repo', str(repo.root), *arguments])
+    assert all(path.is_relative_to(repo.root) for path in reads)
+    assert status == 2
+    captured = capsys.readouterr()
+    assert captured.out == ''
+    assert 'docs/guide.md resolves outside the repository' in captured.err
+
+
+@pytest.mark.parametrize('arguments', [[], ['--references', 'README.md']])
+def test_a_source_below_an_internal_symlink_remains_readable(repo, capsys, arguments):
+    """An internal parent alias still supplies the tracked source to both modes."""
+    repo.write('docs/guide.md', '# Guide\n\n[project](../README.md)\n')
+    repo.commit()
+    (repo.root / 'docs').rename(repo.root / 'moved')
+    (repo.root / 'docs').symlink_to('moved', target_is_directory=True)
+    assert testee.main(['--repo', str(repo.root), *arguments]) == 0
+    output = capsys.readouterr().out
+    assert ('docs/guide.md:3' in output) if arguments else ('problems: 0' in output)
+
+
 def test_clean_documentation_passes(repo, capsys):
     """Short sentences, resolving links and exempt regions give no problem and status zero."""
     repo.write('docs/guide.md', '# Guide\n\n## Second part\n\nA short paragraph. It has two sentences.\n')
