@@ -171,6 +171,8 @@ The governance files are this file, [STYLE.md](STYLE.md), [tasks/README.md](task
 - For a governance edit, check that it preserves the accepted safeguards and authorization boundaries. The edit also needs the user's review under [Governance Files](#governance-files).
 - Documentation that a tool consumes as executable input or configuration is not exempt.
 
+**Documentation check.** Every change that touches a Markdown file MUST pass `./check_docs.py` before the commit. [README Testing](README.md#testing) describes the check.
+
 **Honest verification.**
 
 - Verify success with checks that distinguish failure.

@@ -231,6 +231,15 @@ ruff check .
   2. Check the binary against the SHA-256 that the release publishes.
   3. Run it in a scratch copy of the repository without `.env`, with `COMPOSE_PROJECT_NAME` unset.
 
+**The documentation check.** [AGENTS.md](AGENTS.md#validation-and-review) requires it for every change that touches a Markdown file.
+
+- Run `./check_docs.py` from the repository. It takes less than a second.
+- It checks that each relative link and each anchor resolves.
+- It checks the task files against the index in `tasks/TODO.md`.
+- It checks the rules of [STYLE.md](STYLE.md) that need no judgment, such as the sentence limits.
+- In `DESIGN.md`, `project-review-2026-11-10.md` and the task files, it checks the style of changed lines only.
+- It prints each problem as `path:line: rule: message`.
+
 **Tool configuration.** `pyproject.toml` configures the tools.
 
 - pytest rejects unregistered markers and unexpected passes of `xfail` tests.

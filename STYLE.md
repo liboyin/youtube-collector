@@ -10,6 +10,7 @@ The rules follow ASD-STE100 and ISO 24495-1 loosely. Full compliance with either
 - Code, commands, quoted output and tables of data are exempt.
 - The completion records in [tasks/closed/](tasks/closed/) stay as written. Do not rewrite them to meet these rules.
 - [DESIGN.md](DESIGN.md) and `project-review-2026-11-10.md` are not rewritten as a whole. Apply the rules to the text that a change touches.
+- `./check_docs.py` checks the rules that need no judgment. [README Testing](README.md#testing) describes it.
 
 ## Structure
 
@@ -26,7 +27,7 @@ The rules follow ASD-STE100 and ISO 24495-1 loosely. Full compliance with either
 1. An instruction has at most 28 words. A description has at most 35 words.
 2. Use the active voice and name the actor: the main agent, the reviewer or the user.
 3. Use one term for one concept. Define each process term in the [glossary](#glossary).
-4. Do not join alternatives with a slash. Write "the model and the effort", not "model/effort".
+4. Do not join alternatives with a slash. Write "the model and the effort", not `model/effort`.
 5. Do not chain clauses with semicolons. Write two sentences.
 6. Explain an ID at its first use in a file, for example "T50 (network guard)".
 7. Use the capitalized requirement words, such as MUST and MAY, only for requirements.

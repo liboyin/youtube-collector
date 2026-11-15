@@ -65,7 +65,6 @@ Do these steps in the closing commit:
 5. Fix the links that the move changed:
    - Inside the record, a sibling open task becomes `../open/<ID>.md`, and a closed task becomes `<ID>.md`.
    - Fix every link to the record from other files.
-   - Check that all these links resolve.
 6. Update the documents that the task made stale:
    - DESIGN section 14 (architecture), for added or changed modules.
    - DESIGN section 7, for deployment.
@@ -108,7 +107,7 @@ These rules apply to the record:
 
 ### After a restructure of the tasks
 
-Check the local links, the TODO index against `open/`, and the consistency of IDs and dependencies.
+Check that the dependencies between the tasks are still consistent. `./check_docs.py` checks the links, the IDs and the TODO index.
 
 ## Open task file
 

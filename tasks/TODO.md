@@ -23,7 +23,7 @@ These tasks are outside the sequence:
 - T34 follows T25 and the user's orchestrator design.
 - T14 waits for its revisit trigger.
 - T39 stays deferred until a real run with cookies, authorized under T25, informs its choice of backend (C52). T43, T44 and T51 make that run and that change easier.
-- T55 and T56 change only the review tooling and the task checks. They can land at any time.
+- T56 changes only the review tooling. It can land at any time.
 
 ## Shared constraints
 
@@ -48,5 +48,4 @@ A check that needs a Docker daemon is a host check, because the dev container ha
 - [T49](open/T49.md) — Medium. A scripted, opt-in live canary against real YouTube (C58).
 - [T51](open/T51.md) — Low. Give the caption adapter one method and drop the track protocols.
 - [T52](open/T52.md) — Low. Small cleanups from the 2026-11-14 review.
-- [T55](open/T55.md) — Low. Check the task files for consistency with a test.
 - [T56](open/T56.md) — Low. Stop a nested pytest's output from making a mutation run INVALID.
