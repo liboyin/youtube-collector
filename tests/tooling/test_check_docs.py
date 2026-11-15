@@ -170,6 +170,23 @@ def test_valid_link_forms_pass(repo, capsys):
     assert repo.check(capsys) == (0, [])
 
 
+@pytest.mark.parametrize(('name', 'encoded'), [('part#one.md', 'part%23one.md'), ('part%23one.md', 'part%2523one.md')])
+@pytest.mark.parametrize('fragment', ['', '#%C3%BCber-part'])
+def test_encoded_filename_hashes_are_not_fragment_separators(repo, capsys, name, encoded, fragment):
+    """Decode each component once, keeping an encoded hash in the filename and a real fragment separate."""
+    repo.write(name, '# Guide\n\n## Über part\n')
+    repo.write('README.md', f'# Project\n\n[guide]({encoded}{fragment})\n')
+    assert repo.check(capsys) == (0, [])
+
+
+def test_an_encoded_filename_still_checks_its_heading(repo, capsys):
+    """A valid encoded filename does not hide a missing heading from the default check."""
+    repo.write('part#one.md', '# Guide\n')
+    repo.write('README.md', '# Project\n\n[guide](part%23one.md#missing)\n')
+    assert repo.check(capsys) == (1, [
+        'README.md:3: link: part%23one.md#missing names no heading in its target'])
+
+
 def test_reference_links_are_checked(repo, capsys):
     """A definition with a broken destination and a reference without a definition are both reported."""
     repo.write('README.md', (
@@ -503,6 +520,19 @@ def test_relative_and_encoded_links_name_the_same_target(repo, capsys):
         'README.md:3', 'README.md:5', 'docs/deep/note.md:3', 'docs/deep/note.md:5']
     assert report(repo, capsys, 'docs/../docs/my guide.md#über-part')[1] == [
         'References to docs/my guide.md#über-part:', 'README.md:3', 'docs/deep/note.md:3', '', '2 references found.']
+
+
+@pytest.mark.parametrize('fragment', ['', '#über-part'])
+def test_the_report_matches_encoded_hash_filenames(repo, capsys, fragment):
+    """File and heading reports match encoded hashes without treating them as fragment separators."""
+    repo.write('part#one.md', '# Guide\n\n## Über part\n')
+    # The query syntax reserves a literal # for the fragment; an internal alias names the same file.
+    (repo.root / 'alias.md').symlink_to('part#one.md')
+    repo.write('README.md', '# Project\n\n[file](part%23one.md)\n\n[part](part%23one.md#%C3%BCber-part)\n')
+    expected = ['README.md:5'] if fragment else ['README.md:3', 'README.md:5']
+    status, lines = report(repo, capsys, f'alias.md{fragment}')
+    assert status == 0
+    assert lines[1:-2] == expected
 
 
 def test_a_reference_link_is_reported_where_it_is_used(repo, capsys):

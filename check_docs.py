@@ -192,11 +192,13 @@ def locate(repo: Path, name: str, link: str) -> tuple[Path, str, bool] | None:
     The result is the resolved path, the fragment and whether the destination is a relative path that
     stays in the repository. Symbolic links are resolved first, so a link through one that leaves the
     repository is not inside. A destination with a URL scheme and an empty destination are not local.
+    Split the literal fragment separator before decoding, so an encoded hash stays in the filename.
     """
     link = link[1:-1] if link.startswith('<') else link
     if not link or _SCHEME.match(link):
         return None
-    path, _, fragment = unquote(link).partition('#')
+    path, _, fragment = link.partition('#')
+    path, fragment = unquote(path), unquote(fragment)
     target = ((repo / name).parent / path).resolve() if path else (repo / name).resolve()
     return target, fragment, not path.startswith('/') and target.is_relative_to(repo)
 
