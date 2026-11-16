@@ -9,8 +9,8 @@ The rules follow ASD-STE100 and ISO 24495-1 loosely. Full compliance with either
 - Apply these rules to all documentation text that you add or change, and to messages to the user.
 - Code, commands, quoted output and tables of data are exempt.
 - The completion records in [tasks/closed/](tasks/closed/) stay as written. Do not rewrite them to meet these rules.
-- [DESIGN.md](DESIGN.md) and `project-review-2026-11-10.md` are not rewritten as a whole. Apply the rules to the text that a change touches.
-- `./check_docs.py` checks the rules that need no judgment. [README Testing](README.md#testing) describes it.
+- [DESIGN.md](DESIGN.md) and [project-reviews.md](project-reviews.md) are not rewritten as a whole. Apply the rules to the text that a change touches.
+- The [documentation check](README.md#testing) checks the rules that need no judgment. [README Testing](README.md#testing) describes it.
 
 ## Structure
 

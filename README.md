@@ -231,20 +231,31 @@ ruff check .
   2. Check the binary against the SHA-256 that the release publishes.
   3. Run it in a scratch copy of the repository without `.env`, with `COMPOSE_PROJECT_NAME` unset.
 
+## Shared tools
+
+The documentation checker runs from the sibling checkout `../agent-workflow-common`. `agent-workflow.json` preserves this project's documentation settings. The shared repository owns the implementation and its tests.
+
+- Provide that checkout beside this repository before running the documentation check. Automatic container setup is a later stage of [T60](tasks/closed/T60.md).
+- Run `../agent-workflow-common/tools/check_docs.py` from this repository, or use its absolute path when checking a separate worktree.
+- The checkout determines the tool version. No version is pinned, matching ClipboardTTS.
+- The tool uses Python 3.9 or later and the standard library. Its `--help` text describes the arguments.
+- Change shared tools and run their tests in their repository. Verify both consumers after shared changes.
+- [project-reviews.md](project-reviews.md) preserves historical project reviews. [tasks/](tasks/) owns task state.
+
 **The documentation check.** [AGENTS.md](AGENTS.md#validation-and-review) requires it for every change that touches a Markdown file.
 
-- Run `./check_docs.py` from the repository. It takes less than a second.
+- Run `../agent-workflow-common/tools/check_docs.py` from the repository. It takes less than a second.
 - It checks that each relative link and each anchor resolves.
 - It checks the task files against the index in `tasks/TODO.md`.
 - It checks the rules of [STYLE.md](STYLE.md) that need no judgment, such as the sentence limits.
-- In `DESIGN.md`, `project-review-2026-11-10.md` and the task files, it checks the style of changed lines only.
+- In `DESIGN.md`, `project-reviews.md` and the task files, it checks the style of changed lines only.
 - It prints each problem as `path:line: rule: message`.
 - A pass means that the local documentation references resolve. It does not mean that the documents agree with each other.
 
 **The reference report.** It is optional. Use it before you rename or move a file or a heading.
 
-- Run `./check_docs.py --references AGENTS.md` to list each line that links to that file or to one of its headings.
-- Run `./check_docs.py --references 'AGENTS.md#governance-files'` to list only the links to that heading.
+- Run `../agent-workflow-common/tools/check_docs.py --references AGENTS.md` to list each line that links to that file or to one of its headings.
+- Run `../agent-workflow-common/tools/check_docs.py --references 'AGENTS.md#governance-files'` to list only the links to that heading.
 - Write the path from the root of the repository.
 - The report runs no check. It lists Markdown links only, not paths in code or in plain text.
 

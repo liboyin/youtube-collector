@@ -1,0 +1,10 @@
+{
+  "check_docs": {
+    "changed_lines_only": [
+      "DESIGN.md",
+      "project-reviews.md",
+      "tasks/open/",
+      "tasks/closed/"
+    ]
+  }
+}

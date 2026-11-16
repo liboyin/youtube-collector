@@ -14,6 +14,7 @@ Each document owns one subject:
 - **[STYLE.md](STYLE.md):** rules for writing documentation, and the glossary of process terms.
 - **[README.md](README.md):** the project overview, and the procedures to build, run, configure and test. This includes how the gates run.
 - **[tests/README.md](tests/README.md):** conventions for writing tests.
+- **[project-reviews.md](project-reviews.md):** historical project reviews and finding provenance.
 - **[tasks/](tasks/):** task state and completion records. [tasks/README.md](tasks/README.md) owns its rules.
 - **[Adversarial review skill](.agents/skills/adversarial-review/SKILL.md):** how a review runs, including mutation evidence and evidence retention.
 - **[Grouped task execution skill](.agents/skills/grouped-task-execution/SKILL.md):** the recommended workflow for a group of related tasks, unless the user chooses another.
@@ -171,7 +172,12 @@ The governance files are this file, [STYLE.md](STYLE.md), [tasks/README.md](task
 - For a governance edit, check that it preserves the accepted safeguards and authorization boundaries. The edit also needs the user's review under [Governance Files](#governance-files).
 - Documentation that a tool consumes as executable input or configuration is not exempt.
 
-**Documentation check.** Every change that touches a Markdown file MUST pass `./check_docs.py` before the commit. [README Testing](README.md#testing) describes the check.
+**Documentation check.** Every change that touches a Markdown file MUST pass the shared documentation check before the commit. [README Testing](README.md#testing) describes the check.
+
+**Shared tools.** [README Shared tools](README.md#shared-tools) owns setup for the shared documentation check.
+
+- Change shared tools in `agent-workflow-common`, which owns their tests. Do not copy them into this repository.
+- If its checkout is missing, report the blocker. Do not skip a required check.
 
 **Honest verification.**
 

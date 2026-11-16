@@ -418,7 +418,7 @@ Decisions on the 2026-11-08 architecture review (`architecture-2026-11-08.md` at
 
 P4 (running the reconciler as a coroutine or a subprocess) was rejected by the review and is moot under C40.
 
-Decisions following the [2026-11-10 project review](project-review-2026-11-10.md), made by the user:
+Decisions following the [2026-11-10 project review](project-reviews.md), made by the user:
 
 | ID | Decision |
 |---|---|
@@ -440,6 +440,12 @@ Decisions following the 2026-11-14 project review, made by the user in the discu
 | C58 | Tests gain layers beyond the in-process suite: adapter contract tests that run the real libraries against owned loopback fixtures ([T46](tasks/open/T46.md)), offline end-to-end tests of both workflows of section 3 against a real service process ([T47](tasks/open/T47.md)), a host script for the image checks that need no YouTube ([T48](tasks/open/T48.md)), a scripted live canary against real YouTube that stays opt-in and needs the user's authorization for each run ([T49](tasks/open/T49.md)), and a suite-wide guard against external connections ([T50](tasks/closed/T50.md)). The process weight relative to the product's size is intentional. |
 | C59 | Limits on C53's restart loop, because Docker's restart delay resets after a short run and each turn can contact YouTube: the process pauses for a fixed time before it exits, and the database counts how often each unit has been interrupted; at a cap, recovery records the unit as failed instead of requeueing it, so a unit that crashes the process every time cannot block other work. The pause and the cap are implementation defaults, proposed as 60 seconds and 3. The counter raises the schema version, which refuses older database files (C44). Accepted cost: ordinary restarts count, so three restarts during one long download fail that item. [T35](tasks/open/T35.md). |
 | C60 | Stale-cookie reporting covers rotation only (limits C56): yt-dlp gives no warning for cookies that are already expired or logged out when loaded, and detecting them would mean parsing its verbose output. The gap is accepted for now; `blocked` failures and the cookie database's age are the remaining signals. Revisit after the cookie run under T25. [T44](tasks/open/T44.md). |
+
+Decision on the shared-tool migration, approved by the user on 2026-11-17:
+
+| ID | Decision |
+|---|---|
+| C61 | Shared agent tools: use the sibling `agent-workflow-common` checkout for documentation checks, review snapshots and reviewer dispatch, matching ClipboardTTS. Both devcontainer variants clone into the existing persistent development volume during postCreateCommand and expose a sibling symlink. Existing checkouts are reused without automatic updates. This supersedes the initial host-bind-mount choice at the user's request. The checkout version is unpinned. Python mutation and worktree gate helpers remain local. This removes duplicate tool ownership without changing application contracts. [T60](tasks/closed/T60.md). |
 
 ## 12. Open questions
 
