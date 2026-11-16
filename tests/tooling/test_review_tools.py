@@ -1,7 +1,6 @@
 """Exercise the review tools with owned Git repositories, stub commands and nested pytest runs."""
 
 import importlib.util
-import json
 import os
 import runpy
 import shlex
@@ -24,7 +23,6 @@ def load(name):
 
 
 mutate = load('mutate')
-dispatch = load('dispatch')
 worktree_gates = load('worktree_gates')
 
 TEST_SOURCE = '''from pathlib import Path
@@ -486,111 +484,6 @@ def test_mutate_refuses_an_unloadable_mutants_file(tmp_path):
         mutate.load_mutants(tmp_path / 'mutants.txt')
 
 
-def stub_codex(tmp_path, monkeypatch, *events, status=0, login=0):
-    """Put a ``codex`` stub first on PATH that answers the login check and records its other arguments."""
-    bin_dir = tmp_path / 'bin'
-    bin_dir.mkdir()
-    record = tmp_path / 'codex-args'
-    output = '\n'.join(json.dumps(event) for event in events) + '\nnot json\n'
-    stub = bin_dir / 'codex'
-    stub.write_text(
-        '#!/bin/bash\n'
-        f'if [ "$1" = login ]; then echo "login state {login}"; exit {login}; fi\n'
-        f'printf "%s\\n" "$@" > {shlex.quote(str(record))}\n'
-        f'printf "%s" {shlex.quote(output)}\n'
-        f'exit {status}\n',
-        encoding='utf-8',
-    )
-    stub.chmod(0o755)
-    monkeypatch.setenv('PATH', str(bin_dir), prepend=':')
-    return record
-
-
-STARTED = {'type': 'thread.started', 'thread_id': 'abc'}
-REPORT = {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'No blocking findings.'}}
-FIRST = ['--record', 'rec.md', '--boundary', 'tasks/open/T1.md', '--purpose', 'Do a thing.']
-
-
-def test_dispatch_reads_the_base_revision_from_the_target(tmp_path, repo, monkeypatch, capsys):
-    """The prompt names the target's actual HEAD, the dispatch arguments and closed stdin."""
-    record = stub_codex(tmp_path, monkeypatch, STARTED, REPORT)
-    log = tmp_path / 'log.jsonl'
-    with patch.object(dispatch.subprocess, 'run', wraps=subprocess.run) as run:
-        status = dispatch.main([*FIRST, '--target', str(repo), '--log', str(log), '--ignore', 'junk.sh'])
-    # An open non-terminal stdin makes the CLI wait for more prompt text instead of starting.
-    assert run.call_args_list[-1].kwargs['stdin'] is subprocess.DEVNULL
-    arguments = record.read_text(encoding='utf-8')
-    assert status == 0
-    assert git(repo, 'rev-parse', 'HEAD').strip() in arguments
-    assert 'gpt-6.1-sol' in arguments
-    assert 'model_reasoning_effort="medium"' in arguments
-    assert 'Unrelated paths to ignore: junk.sh.' in arguments
-    assert 'tasks/open/T1.md' in arguments
-    assert capsys.readouterr().out == 'SESSION abc\nNo blocking findings.\n'
-    assert 'thread.started' in log.read_text(encoding='utf-8')
-
-
-def test_dispatch_resumes_the_recorded_reviewer(tmp_path, repo, monkeypatch):
-    """A follow-up continues the named session rather than starting another."""
-    record = stub_codex(tmp_path, monkeypatch, REPORT)
-    status = dispatch.main([
-        '--record', 'rec.md', '--target', str(repo), '--log', str(tmp_path / 'log'),
-        '--resume', 'abc', '--delta', 'A fix.',
-    ])
-    lines = record.read_text(encoding='utf-8').splitlines()
-    assert status == 0
-    assert lines[:2] == ['exec', 'resume']
-    assert 'abc' in lines
-    assert any('A fix.' in line for line in lines)
-
-
-def test_dispatch_propagates_the_cli_status(tmp_path, repo, monkeypatch):
-    """A failed CLI run is a failed dispatch, even with a partial report."""
-    stub_codex(tmp_path, monkeypatch, REPORT, status=3)
-    assert dispatch.main([*FIRST, '--target', str(repo), '--log', str(tmp_path / 'log')]) == 3
-
-
-def test_dispatch_fails_without_a_report(tmp_path, repo, monkeypatch, capsys):
-    """A successful exit with no report is not a review."""
-    stub_codex(tmp_path, monkeypatch, STARTED)
-    assert dispatch.main([*FIRST, '--target', str(repo), '--log', str(tmp_path / 'log')]) == 1
-    assert 'no report' in capsys.readouterr().err
-
-
-def test_dispatch_stops_when_the_cli_is_not_logged_in(tmp_path, repo, monkeypatch, capsys):
-    """A failed login check is a blocker: nothing is sent, and the message forbids a substitute."""
-    record = stub_codex(tmp_path, monkeypatch, STARTED, REPORT, login=1)
-    assert dispatch.main([*FIRST, '--target', str(repo), '--log', str(tmp_path / 'log')]) == 2
-    error = capsys.readouterr().err
-    assert 'codex login status exited with 1: login state 1' in error
-    assert 'This blocks the review' in error
-    assert 'do not use another reviewer or model' in error
-    assert not record.exists()
-    assert not (tmp_path / 'log').exists()
-
-
-def test_dispatch_stops_when_the_cli_is_missing(tmp_path, repo, monkeypatch, capsys):
-    """Without a codex command the dispatch reports the blocker instead of raising."""
-    empty = tmp_path / 'empty'
-    empty.mkdir()
-    monkeypatch.setenv('PATH', str(empty))
-    assert dispatch.main([*FIRST, '--target', str(repo), '--log', str(tmp_path / 'log')]) == 2
-    error = capsys.readouterr().err
-    assert 'the codex command cannot run' in error
-    assert 'This blocks the review' in error
-
-
-@pytest.mark.parametrize('arguments', [
-    ['--record', 'r', '--log', 'l'], ['--record', 'r', '--log', 'l', '--resume', 'abc'],
-])
-def test_dispatch_requires_the_right_arguments_for_its_mode(arguments, capsys):
-    """A first assessment needs its boundary and purpose, and a follow-up its delta."""
-    with pytest.raises(SystemExit) as raised:
-        dispatch.main(arguments)
-    assert raised.value.code == 2
-    assert 'needs' in capsys.readouterr().err
-
-
 def gate_stubs(repo, monkeypatch, tmp_path, *, coverage=0, mypy=0):
     """Commit a fake coverage gate and put mypy and ruff stubs first on PATH; each records its run."""
     calls = tmp_path / 'calls'
@@ -862,7 +755,7 @@ def test_worktree_gates_require_files_only_to_freeze(arguments, capsys):
     assert 'name the files' in capsys.readouterr().err
 
 
-@pytest.mark.parametrize('name', ['mutate', 'dispatch', 'worktree_gates'])
+@pytest.mark.parametrize('name', ['mutate', 'worktree_gates'])
 def test_scripts_run_as_programs(name, monkeypatch, capsys):
     """Each script's entry point runs its command line; --help exits cleanly."""
     monkeypatch.setattr(sys, 'argv', [name, '--help'])

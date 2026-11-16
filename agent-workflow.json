@@ -6,5 +6,8 @@
       "tasks/open/",
       "tasks/closed/"
     ]
+  },
+  "dispatch": {
+    "safety": "Never contact YouTube or use .env, browser profiles, the staging share or the service SQLite volume."
   }
 }

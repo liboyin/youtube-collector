@@ -174,7 +174,7 @@ The governance files are this file, [STYLE.md](STYLE.md), [tasks/README.md](task
 
 **Documentation check.** Every change that touches a Markdown file MUST pass the shared documentation check before the commit. [README Testing](README.md#testing) describes the check.
 
-**Shared tools.** [README Shared tools](README.md#shared-tools) owns setup for the shared documentation check.
+**Shared tools.** [README Shared tools](README.md#shared-tools) owns setup for the documentation check, review snapshot and reviewer dispatch.
 
 - Change shared tools in `agent-workflow-common`, which owns their tests. Do not copy them into this repository.
 - If its checkout is missing, report the blocker. Do not skip a required check.

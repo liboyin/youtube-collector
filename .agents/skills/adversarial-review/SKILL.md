@@ -28,7 +28,7 @@ If a follow-up change is cosmetic, or you want to reuse earlier gate results or 
 How to start the reviewer depends on the main agent:
 
 - **Codex:** use `spawn_agent` with `fork_turns: "none"`, `model: "gpt-6.1-sol"` and `reasoning_effort: "medium"`, unless the user selects otherwise. Continue the recorded reviewer with `followup_task`.
-- **Claude Code:** run [dispatch.py](references/dispatch.py). It writes the prompt, starts or resumes the Codex CLI, and prints the session ID and the report. Its `--help` text lists the arguments.
+- **Claude Code:** run `../agent-workflow-common/tools/dispatch.py` from the repository root. It writes the prompt, starts or resumes the Codex CLI, and prints the session ID and the report. Its `--help` text lists the arguments.
 
 If the requested model or dispatch path is unavailable:
 
@@ -44,7 +44,7 @@ Wait for the reviewer's exit status and report before you decide on any finding.
 
 1. Stop editing the candidate.
 2. Obtain a passing result for every gate on the exact candidate. Resolve each failure before dispatch.
-3. Take the integrity snapshot after the last gate run and immediately before dispatch. Run [snapshot.py](references/snapshot.py), and pass each in-scope untracked file as an argument.
+3. Take the integrity snapshot after the last gate run and immediately before dispatch. Run `../agent-workflow-common/tools/snapshot.py` from the repository root, and pass each in-scope untracked file as an argument.
 4. Note the processes that you own, if any are relevant.
 5. Update the [working record](#evidence-retention).
 

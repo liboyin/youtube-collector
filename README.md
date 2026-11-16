@@ -208,7 +208,7 @@ ruff check .
 - A value that is not numeric, not finite or out of range fails before pytest runs.
 - pytest also keeps its configured aggregate floor of 80%.
 - Pass only whole-suite options to this gate, such as `-x` or `-q`. Selected test paths cannot certify per-file coverage.
-- Coverage includes the application package and the standalone [review snapshot helper](.agents/skills/adversarial-review/references/snapshot.py), whose tests load it by file path.
+- Coverage includes the application package and the local mutation and worktree gate helpers. The shared repository measures coverage of its own tools.
 
 **During development.**
 
@@ -233,14 +233,22 @@ ruff check .
 
 ## Shared tools
 
-The documentation checker runs from the sibling checkout `../agent-workflow-common`. `agent-workflow.json` preserves this project's documentation settings. The shared repository owns the implementation and its tests.
+Three tools run from the sibling checkout `../agent-workflow-common`. This repository holds their configuration in `agent-workflow.json` and keeps no copies of their implementations or tests.
 
-- Provide that checkout beside this repository before running the documentation check. Automatic container setup is a later stage of [T60](tasks/closed/T60.md).
-- Run `../agent-workflow-common/tools/check_docs.py` from this repository, or use its absolute path when checking a separate worktree.
+| Tool | Purpose |
+|---|---|
+| `../agent-workflow-common/tools/check_docs.py` | Documentation checks and reference reports |
+| `../agent-workflow-common/tools/snapshot.py` | Review integrity snapshots |
+| `../agent-workflow-common/tools/dispatch.py` | Codex CLI reviewer dispatch |
+
+- Provide the sibling checkout before running shared tools. Automatic container setup is a later stage of [T60](tasks/closed/T60.md).
+- The tools use Python 3.9 or later and the standard library. Their `--help` text describes the arguments.
 - The checkout determines the tool version. No version is pinned, matching ClipboardTTS.
-- The tool uses Python 3.9 or later and the standard library. Its `--help` text describes the arguments.
 - Change shared tools and run their tests in their repository. Verify both consumers after shared changes.
-- [project-reviews.md](project-reviews.md) preserves historical project reviews. [tasks/](tasks/) owns task state.
+- Keep `mutate.py` and `worktree_gates.py` local. They implement this project's Python test isolation and gates.
+- From a review worktree, use the shared checkout's absolute tool path and run it with the worktree as the current directory.
+- For CLI dispatch from another directory, pass the worktree with `--target`.
+- [project-reviews.md](project-reviews.md) preserves historical project reviews. Task state remains in [tasks/](tasks/).
 
 **The documentation check.** [AGENTS.md](AGENTS.md#validation-and-review) requires it for every change that touches a Markdown file.
 
