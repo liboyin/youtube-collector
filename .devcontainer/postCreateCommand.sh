@@ -1,7 +1,7 @@
 #! /bin/bash
 set -euo pipefail
 # The image's dev target already installed the locked runtime and dev dependencies through
-# PYPI_PROXY, so nothing is installed here. Only confirm that uv.lock still matches
+# PYPI_PROXY, so no Python dependencies are installed here. Confirm that uv.lock still matches
 # pyproject.toml: --offline keeps this check off the network, and nothing here rewrites the
 # lock, because refreshing it is a deliberate ./update-dependencies.sh. An up-to-date lock is
 # confirmed from the files alone; a stale one fails, with uv's message about being unable to
@@ -26,6 +26,10 @@ if not keys:
     sys.exit("postCreateCommand: GitHub metadata listed no SSH host keys")
 print("\n".join(f"github.com {key}" for key in keys))
 ' > "$HOME/.ssh/known_hosts"
+# /workspaces can belong to root on a new container. Change only its own ownership,
+# not the mounted project or any other checkout. Keep the shared tools on dev_persist.
+sudo chown ubuntu:ubuntu /workspaces
+bash .devcontainer/setup-agent-tools.sh "$HOME/persist/agent-workflow-common" /workspaces/agent-workflow-common
 # use native installer of Claude Code
 curl -fsSL https://claude.ai/install.sh | bash
 # Install standalone Codex for direct CLI review, without prompting or launching a session.

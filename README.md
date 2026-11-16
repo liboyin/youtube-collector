@@ -241,7 +241,13 @@ Three tools run from the sibling checkout `../agent-workflow-common`. This repos
 | `../agent-workflow-common/tools/snapshot.py` | Review integrity snapshots |
 | `../agent-workflow-common/tools/dispatch.py` | Codex CLI reviewer dispatch |
 
-- Provide the sibling checkout before running shared tools. Automatic container setup is a later stage of [T60](tasks/closed/T60.md).
+- Both devcontainers run `.devcontainer/postCreateCommand.sh`, which clones the tools into `$HOME/persist/agent-workflow-common` on the existing `dev_persist` volume.
+- The hook changes only `/workspaces` ownership to `ubuntu:ubuntu` with `sudo chown`, then links the checkout at `/workspaces/agent-workflow-common`.
+- First setup needs GitHub access. Existing checkouts are reused without pulls or resets, so local work survives recreation of the container.
+- Setup stops if the sibling path conflicts, the checkout is invalid, required tools are missing, or cloning fails. It preserves existing paths.
+- Resolve a reported conflict explicitly. The hook never replaces another checkout or removes an incomplete one.
+- This checkout is separate from ClipboardTTS's checkout. Commit and push shared changes to transfer them between environments.
+- Temporary review evidence stays outside the repository. Governance, documentation and durable review records remain tracked but are excluded from Docker's build context.
 - The tools use Python 3.9 or later and the standard library. Their `--help` text describes the arguments.
 - The checkout determines the tool version. No version is pinned, matching ClipboardTTS.
 - Change shared tools and run their tests in their repository. Verify both consumers after shared changes.

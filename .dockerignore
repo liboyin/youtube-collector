@@ -35,9 +35,13 @@ pip-wheel-metadata/
 .claude
 AGENTS.md
 CLAUDE.md
+agent-workflow.json
 
-# Documentations
+# Documentation and durable review records
 README.md
+DESIGN.md
+STYLE.md
+project-reviews.md
 tasks/
 
 # Docker files
