@@ -1,5 +1,6 @@
-"""Fixtures that guard every test against external connections, and own the threads and loopback servers it starts."""
+"""Fixtures that guard every test against external connections and process exits, and own its threads and servers."""
 
+import os
 import threading
 from collections.abc import Callable, Iterator
 from http.server import ThreadingHTTPServer
@@ -47,6 +48,47 @@ def network_refusals() -> Iterator[NetworkRefusals]:
             f'The test tried to reach beyond loopback: {attempts}. Give the code under test a fake or a loopback '
             'endpoint; if the attempt is deliberate, take it with network_refusals.take(), in a finally if an '
             'assertion can fail before then (tests/README.md, Network).'
+        )
+
+
+class ProcessExits:
+    """The process exits that code under test attempted during one test."""
+
+    def __init__(self) -> None:
+        """Start with none."""
+        self._statuses: list[int] = []
+
+    def refuse(self, status: int) -> None:
+        """Stand in for ``os._exit``: record the attempt and raise instead of ending the test process.
+
+        Raises:
+            AssertionError: Always. On a worker thread it fails the test as an unhandled thread exception.
+        """
+        self._statuses.append(status)
+        raise AssertionError(f'The code under test tried to end the test process with status {status}')
+
+    def take(self) -> list[int]:
+        """Return the attempted statuses and forget them, for a test that makes an attempt on purpose."""
+        statuses, self._statuses[:] = self._statuses[:], []
+        return statuses
+
+
+@pytest.fixture(autouse=True)
+def process_exits() -> Iterator[ProcessExits]:
+    """Refuse ``os._exit`` in each test, then fail it if any exit was attempted.
+
+    The service's fatal exit (DESIGN 5.12) calls ``os._exit``, which would end the whole test run without a
+    report. The refusal raises at the attempt, but code under test may swallow that error, so the record
+    decides. A child process, such as a lifecycle service, does not load this guard and exits for real.
+    """
+    exits = ProcessExits()
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(os, '_exit', exits.refuse)
+        yield exits
+        attempts = exits.take()
+        assert not attempts, (
+            f'The test tried to end the test process with statuses {attempts}. Give the code under test a fake '
+            'exit; if the attempt is deliberate, take it with process_exits.take().'
         )
 
 

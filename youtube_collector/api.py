@@ -42,6 +42,15 @@ logger = logging.getLogger(__name__)
 type Body = dict[str, object]
 
 
+def _exit_now(status: int) -> None:
+    """End the process at once with ``status``, skipping every shutdown handler (decision C53).
+
+    ``os._exit`` is looked up at each call rather than bound as a default, so that the test suite's guard
+    can refuse it.
+    """
+    os._exit(status)
+
+
 @dataclass
 class Components:
     """The collaborators the service composes; tests substitute fakes for the adapters and clocks.
@@ -62,7 +71,7 @@ class Components:
     monotonic: Callable[[], float] = field(default=time.monotonic)
     release: Callable[[], None] = field(default=lambda: None)
     sleep: Callable[[float], None] = field(default=time.sleep)
-    exit_process: Callable[[int], object] = field(default=os._exit)
+    exit_process: Callable[[int], object] = field(default=_exit_now)
 
 
 def default_components(settings: Settings) -> Components:

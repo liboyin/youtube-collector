@@ -1,4 +1,4 @@
-"""Check that the shared fixtures in tests/conftest.py fail a test that reaches beyond loopback or leaks threads."""
+"""Check that the shared fixtures in tests/conftest.py fail a test that reaches out, exits or leaks threads."""
 
 import importlib.util
 import os
@@ -93,6 +93,62 @@ def teardown_module():
 ''')
     assert status == 0, output
     assert '1 passed' in output
+
+
+def test_a_swallowed_process_exit_fails_teardown(tmp_path):
+    """An os._exit that the code under test catches still fails its test, and the test process survives to say so.
+
+    A broken guard would let the nested run end with status 3 instead of reporting.
+    """
+    status, output = run_nested(tmp_path, '''
+import os
+
+
+def test_swallow():
+    try:
+        os._exit(3)
+    except AssertionError:
+        pass
+''')
+    assert status == 1, output
+    assert 'ERROR at teardown of test_swallow' in output
+    assert 'tried to end the test process with statuses [3]' in output
+    assert 'process_exits.take()' in output
+
+
+def test_a_process_exit_on_another_thread_fails_the_test(tmp_path):
+    """The service's fatal exit runs on the worker thread; there too it is refused and fails the test."""
+    status, output = run_nested(tmp_path, '''
+import os
+import threading
+
+
+def test_thread():
+    thread = threading.Thread(target=os._exit, args=(4,))
+    thread.start()
+    thread.join()
+''')
+    assert status == 1, output
+    assert 'end the test process with status 4' in output
+
+
+def test_a_taken_process_exit_passes(tmp_path):
+    """A test that attempts an exit on purpose and takes it passes."""
+    status, output = run_nested(tmp_path, '''
+import os
+
+REAL_EXIT = os._exit
+
+
+def test_deliberate(process_exits):
+    assert os._exit is not REAL_EXIT
+    try:
+        os._exit(5)
+    except AssertionError:
+        pass
+    assert process_exits.take() == [5]
+''')
+    assert status == 0, output
 
 
 def test_a_leaked_thread_fails_teardown(tmp_path):

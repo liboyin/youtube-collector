@@ -15,6 +15,7 @@
 Shared fixtures live in `conftest.py` files:
 
 - `tests/conftest.py` installs the [network guard](#network) and owns test threads and loopback servers.
+- `tests/conftest.py` also refuses `os._exit` in every test (`process_exits`). Take a deliberate attempt with `process_exits.take()`.
 - `tests/tooling/conftest.py` builds the owned subprocess environment for the tests of shell tools.
 
 ## Owned state

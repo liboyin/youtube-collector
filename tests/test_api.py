@@ -25,6 +25,8 @@ VIDEO = 'abcdefghijk'
 OTHER = 'bbbbbbbbbbb'
 VIDEO_URL = f'https://youtu.be/{VIDEO}'
 PLAYLIST_URL = 'https://www.youtube.com/playlist?list=PLlist'
+# Read at import, before any test's guard replaces it.
+REAL_EXIT = os._exit
 
 
 @dataclass(frozen=True)
@@ -114,19 +116,10 @@ def settings(tmp_path, staging_root):
     )
 
 
-def refuse_exit(status):
-    """Stand in for the fatal process exit, which would end the test process.
-
-    Raising on the worker thread surfaces as pytest's unhandled-thread-exception warning, which fails the test.
-    """
-    raise AssertionError(f'the service tried to end the test process with status {status}')
-
-
 def fake_components(media, monotonic, **fields):
-    """Return fake components whose fatal pause returns at once and whose process exit is refused."""
+    """Return fake components whose fatal pause returns at once; the suite's guard refuses the real exit."""
     return testee.Components(**{
-        'media': media, 'captions': FakeCaptions(), 'monotonic': monotonic, 'sleep': lambda seconds: None,
-        'exit_process': refuse_exit, **fields,
+        'media': media, 'captions': FakeCaptions(), 'monotonic': monotonic, 'sleep': lambda seconds: None, **fields,
     })
 
 
@@ -565,11 +558,15 @@ def test_the_fatal_exit_happens_even_if_its_diagnostics_fail(settings, media, mo
     assert exits == [1]
 
 
-def test_default_components_pause_and_exit_for_real(settings):
-    """Unless a test substitutes them, the fatal pause sleeps and the exit skips every shutdown handler."""
+def test_default_components_pause_and_exit_for_real(settings, process_exits):
+    """Unless a test substitutes them, the fatal pause sleeps and the exit goes through ``os._exit`` at call time."""
     components = testee.Components(media=FakeMedia(), captions=FakeCaptions())
     assert components.sleep is time.sleep
-    assert components.exit_process is os._exit
+    # Checked before the call: an exit bound at import would bypass the guard and end this test run.
+    assert components.exit_process is not REAL_EXIT
+    with pytest.raises(AssertionError, match='status 3'):
+        components.exit_process(3)
+    assert process_exits.take() == [3]
     assert Settings(staging_dir=settings.staging_dir).fatal_pause == 60.0
 
 
