@@ -6,6 +6,10 @@ of work in round-robin order (decision C9), expands playlists, checks each artif
 records the item's outcome with its failures in one store write. It pauses without changing any
 record while the staging marker is missing. It is the only thread that touches the staging share,
 and the latest marker check it made is what ``/health`` reports (decisions C25 and C43).
+
+An error that escapes the handling of a unit is an infrastructure fault or a bug, not an item's
+failure, so it ends the worker's run and goes to the fatal callback, which ends the process for
+Docker to restart it (decision C53).
 """
 
 import enum
@@ -158,7 +162,8 @@ class Worker[T: Track]:
         marker_check_interval: The minimum seconds between marker checks during a download (decision C43).
         idle_wait: How long to wait for a wake-up when there is no work.
         pause_wait: How long to wait before checking the staging marker again while paused.
-        error_wait: How long to wait after an unexpected error before trying again.
+        on_fatal: Called once on the worker thread with the error that ended ``run``, after
+            ``on_stopped``. The service's callback ends the process (decision C53); a test's records.
         on_stopped: Called on the worker thread when ``run`` ends, however it ends, to release what the
             adapters hold. An abandoned worker calls it only when it finally finishes, so nothing it
             still uses can be released under it.
@@ -166,8 +171,8 @@ class Worker[T: Track]:
 
     def __init__(
         self, *, open_store: Callable[[], Store], staging_root: Path, media: MediaSource, captions: CaptionSource[T],
-        monotonic: Callable[[], float], marker_check_interval: float = 30.0,
-        idle_wait: float = 30.0, pause_wait: float = 5.0, error_wait: float = 5.0,
+        monotonic: Callable[[], float], on_fatal: Callable[[BaseException], None],
+        marker_check_interval: float = 30.0, idle_wait: float = 30.0, pause_wait: float = 5.0,
         on_stopped: Callable[[], None] = lambda: None,
     ) -> None:
         """Store the collaborators; nothing runs until ``run``."""
@@ -179,13 +184,19 @@ class Worker[T: Track]:
         self._marker_check_interval = marker_check_interval
         self._idle_wait = idle_wait
         self._pause_wait = pause_wait
-        self._error_wait = error_wait
+        self._on_fatal = on_fatal
         self._on_stopped = on_stopped
+        self._failed = False
         self._cursor = 0
         self._paused = False
         self._staging_check: StagingCheck | None = None
         self._stopping = threading.Event()
         self._wakeup = threading.Event()
+
+    @property
+    def failed(self) -> bool:
+        """Whether ``run`` ended on an error; set before the fatal callback runs, and never cleared."""
+        return self._failed
 
     @property
     def paused(self) -> bool:
@@ -208,26 +219,32 @@ class Worker[T: Track]:
     def run(self) -> None:
         """Run the worker loop until ``stop``: recover interrupted work, then take units one by one.
 
-        Each step's unexpected error is logged and retried after ``error_wait``, so one bad unit
-        cannot kill the thread; the unit it interrupted is recovered at the next restart. ``on_stopped``
-        runs last, also if opening the store or recovery raises.
+        Item failures are recorded by ``step`` and never reach here. Anything else that escapes,
+        from opening the store, recovery, a step or ``on_stopped``, ends the loop, which would
+        otherwise leave its unit ``running`` or ``expanding`` while the process looks healthy. The
+        worker then marks itself failed and passes the error to ``on_fatal`` exactly once, after
+        ``on_stopped`` has run (decision C53).
         """
         try:
-            with self._open_store() as store:
-                store.recover()
-                while not self._stopping.is_set():
-                    try:
-                        step = self.step(store)
-                    except Exception:
-                        logger.exception('Worker step failed')
-                        self._wait(self._error_wait)
-                        continue
-                    if step is Step.PAUSED:
-                        self._wait(self._pause_wait)
-                    elif step is Step.IDLE:
-                        self._wait(self._idle_wait)
-        finally:
-            self._on_stopped()
+            try:
+                self._loop()
+            finally:
+                self._on_stopped()
+        except BaseException as error:
+            self._failed = True
+            logger.critical('The worker cannot continue', exc_info=error)
+            self._on_fatal(error)
+
+    def _loop(self) -> None:
+        """Recover interrupted work, then take units until ``stop``."""
+        with self._open_store() as store:
+            store.recover()
+            while not self._stopping.is_set():
+                step = self.step(store)
+                if step is Step.PAUSED:
+                    self._wait(self._pause_wait)
+                elif step is Step.IDLE:
+                    self._wait(self._idle_wait)
 
     def _wait(self, timeout: float) -> None:
         """Wait for a wake-up, a stop or the timeout."""

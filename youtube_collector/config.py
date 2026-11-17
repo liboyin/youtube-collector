@@ -37,6 +37,8 @@ class Settings:
             implementation default (decision C35).
         shutdown_grace: How long shutdown waits for the worker's current unit before abandoning it, which
             does not stop it (decisions C36 and C50; ``COLLECTOR_SHUTDOWN_GRACE``).
+        fatal_pause: How long the process waits after the worker fails before it exits, which bounds a
+            restart loop to one turn per pause; an implementation default (decision C59).
     """
 
     staging_dir: Path
@@ -47,6 +49,7 @@ class Settings:
     port: int = 8000
     staging_health_max_age: float = 120.0
     shutdown_grace: float = 30.0
+    fatal_pause: float = 60.0
 
     @classmethod
     def from_environ(cls, environ: Mapping[str, str]) -> Self:

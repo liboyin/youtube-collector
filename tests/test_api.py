@@ -4,6 +4,8 @@ The real lifespan runs, with the worker thread, against a test-owned staging dir
 and fake adapters, so nothing reaches YouTube.
 """
 
+import logging
+import os
 import sqlite3
 import threading
 import time
@@ -112,9 +114,25 @@ def settings(tmp_path, staging_root):
     )
 
 
-def make_client(settings, media, monotonic):
+def refuse_exit(status):
+    """Stand in for the fatal process exit, which would end the test process.
+
+    Raising on the worker thread surfaces as pytest's unhandled-thread-exception warning, which fails the test.
+    """
+    raise AssertionError(f'the service tried to end the test process with status {status}')
+
+
+def fake_components(media, monotonic, **fields):
+    """Return fake components whose fatal pause returns at once and whose process exit is refused."""
+    return testee.Components(**{
+        'media': media, 'captions': FakeCaptions(), 'monotonic': monotonic, 'sleep': lambda seconds: None,
+        'exit_process': refuse_exit, **fields,
+    })
+
+
+def make_client(settings, media, monotonic, **fields):
     """Return a TestClient for an app with fake components; entering it runs the lifespan."""
-    components = testee.Components(media=media, captions=FakeCaptions(), monotonic=monotonic)
+    components = fake_components(media, monotonic, **fields)
     return TestClient(testee.create_app(settings, lambda _settings: components))
 
 
@@ -460,6 +478,101 @@ def test_health_is_503_when_a_thread_has_died(client):
     assert response.json()['threads'] == {'worker': False}
 
 
+class Fatal(BaseException):
+    """An error that escapes the worker's handling of an item, as only a non-``Exception`` can from an adapter."""
+
+
+def test_a_failed_worker_pauses_then_ends_the_process_with_status_1(settings, media, monotonic, caplog):
+    """The worker's failure is logged, then the pause runs, then the exit; meanwhile /health reports it (C53, C59)."""
+    events = []
+    paused = threading.Event()
+    resume = threading.Event()
+
+    def video_info(url):
+        raise Fatal('the worker cannot continue')
+
+    def sleep(seconds):
+        events.append(('sleep', seconds, 'exiting with status 1 in 60.0 seconds' in caplog.text))
+        paused.set()
+        resume.wait(30)
+
+    media.video_info = video_info
+    try:
+        with caplog.at_level(logging.CRITICAL), make_client(
+            settings, media, monotonic, sleep=sleep, exit_process=lambda status: events.append(('exit', status)),
+        ) as client:
+            runtime = client.app.state.runtime
+            try:
+                job = client.post('/jobs/videos', json={'url': VIDEO_URL}).json()
+                assert paused.wait(10)
+                assert events == [('sleep', 60.0, True)]
+                health = client.get('/health')
+                assert health.status_code == 503
+                assert health.json()['threads'] == {'worker': False}
+                assert health.json()['database']['ok'] is True
+                assert client.get(f'/jobs/{job["id"]}').json()['items'][0]['state'] == 'running'
+                assert client.post('/jobs/videos', json={'url': VIDEO_URL}).status_code == 202
+            finally:
+                resume.set()  # before the lifespan joins the worker, which would otherwise wait out the grace
+            runtime.worker_thread.join(10)
+            assert not runtime.worker_thread.is_alive()
+    finally:
+        resume.set()
+    assert events == [('sleep', 60.0, True), ('exit', 1)]
+    assert 'The worker cannot continue' in caplog.text
+
+
+class BrokenFlush:
+    """A stream or log handler whose flush fails, as a closed pipe's does."""
+
+    def __init__(self, error):
+        """Remember the error that every flush raises."""
+        self.error = error
+        self.level = logging.NOTSET
+
+    def flush(self):
+        """Fail."""
+        raise self.error
+
+    def write(self, text):
+        """Accept and drop text."""
+        return len(text)
+
+    def handle(self, record):
+        """Drop the record, as a handler would after failing to emit it."""
+
+
+@pytest.mark.parametrize('broken', ['handler', 'stdout', 'stderr', 'sleep'])
+def test_the_fatal_exit_happens_even_if_its_diagnostics_fail(settings, media, monotonic, broken, monkeypatch):
+    """A failing pause or flush must not skip the exit, which would leave the API alive without a worker (C53)."""
+    exits = []
+
+    def sleep(seconds):
+        if broken == 'sleep':
+            raise OSError('interrupted pause')
+
+    runtime = testee._Runtime(settings, fake_components(media, monotonic, sleep=sleep, exit_process=exits.append))
+    failing = BrokenFlush(BrokenPipeError('closed pipe') if broken != 'handler' else OSError('disk full'))
+    if broken == 'handler':
+        monkeypatch.setattr(logging.getLogger(), 'handlers', [*logging.getLogger().handlers, failing])
+    elif broken in ('stdout', 'stderr'):
+        monkeypatch.setattr(testee.sys, broken, failing)
+    if broken == 'sleep':
+        with pytest.raises(OSError, match='interrupted pause'):  # it surfaces, but only after the exit
+            runtime._fatal(RuntimeError('database is locked'))
+    else:
+        runtime._fatal(RuntimeError('database is locked'))
+    assert exits == [1]
+
+
+def test_default_components_pause_and_exit_for_real(settings):
+    """Unless a test substitutes them, the fatal pause sleeps and the exit skips every shutdown handler."""
+    components = testee.Components(media=FakeMedia(), captions=FakeCaptions())
+    assert components.sleep is time.sleep
+    assert components.exit_process is os._exit
+    assert Settings(staging_dir=settings.staging_dir).fatal_pause == 60.0
+
+
 def test_api_stays_responsive_while_the_worker_is_stalled_on_the_share(settings, media, monotonic):
     """With the worker stuck in a marker check, as on a stalled SMB share, the API still answers (C25)."""
     entered = threading.Event()
@@ -532,9 +645,7 @@ def test_default_components_release_closes_the_caption_session(settings):
 
 def client_with_release(settings, media, monotonic, release, captions=None):
     """Return a TestClient whose components report their release."""
-    components = testee.Components(
-        media=media, captions=captions or FakeCaptions(), monotonic=monotonic, release=release,
-    )
+    components = fake_components(media, monotonic, captions=captions or FakeCaptions(), release=release)
     return TestClient(testee.create_app(settings, lambda _settings: components))
 
 
@@ -561,7 +672,7 @@ def test_startup_failure_releases_when_the_runtime_cannot_be_built(settings, med
 def runtime_with_release(settings, media, monotonic, release):
     """Return a runtime that is built but not started."""
     return testee._Runtime(
-        settings, testee.Components(media=media, captions=FakeCaptions(), monotonic=monotonic, release=release),
+        settings, fake_components(media, monotonic, release=release),
     )
 
 

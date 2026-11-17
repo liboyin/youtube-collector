@@ -32,7 +32,7 @@ This behavior is acknowledged in the worker docstring as recovery at the next re
 
 **Recommendation:** give persistence/infrastructure failures an explicit recovery policy. Prefer retrying persistence of the already-computed outcome after restoring a usable connection, or stopping consumption and exposing a durable/observable unhealthy condition requiring restart. Requeuing immediately is another option, but can repeat acquisition if the user has moved a published file. Do not silently add general retry of failed YouTube jobs, which DESIGN excludes.
 
-**Trade-off:** automatic infrastructure recovery costs additional state handling; operator restart is simpler but must be visible. User disposition: automatic recovery is desired but not urgent (DESIGN C48); [T35](tasks/open/T35.md) records the work. No behavior changed.
+**Trade-off:** automatic infrastructure recovery costs additional state handling. Operator restart is simpler but must be visible. User disposition: automatic recovery is desired but not urgent (DESIGN C48). [T35](tasks/closed/T35.md) records the work. No behavior changed.
 
 #### F2 — Medium: failed transaction finalization can poison a long-lived connection
 

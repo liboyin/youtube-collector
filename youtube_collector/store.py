@@ -25,13 +25,17 @@ from typing import Self
 from youtube_collector.categories import Category
 
 __all__ = [
-    'SCHEMA_VERSION', 'CaptionsOutcome', 'ItemResult', 'ItemState', 'JobKind', 'JobState', 'MediaOutcome',
-    'NewFailure', 'Phase', 'PlaylistEntry', 'Store', 'TargetType', 'TrackKind', 'WorkItem', 'WorkUnit', 'initialize',
+    'MAX_INTERRUPTIONS', 'SCHEMA_VERSION', 'CaptionsOutcome', 'ItemResult', 'ItemState', 'JobKind', 'JobState',
+    'MediaOutcome', 'NewFailure', 'Phase', 'PlaylistEntry', 'Store', 'TargetType', 'TrackKind', 'WorkItem', 'WorkUnit',
+    'initialize',
 ]
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+# A unit interrupted this many times is failed by recovery instead of requeued, so a unit that ends
+# the process every time cannot block other work in a restart loop (decision C59).
+MAX_INTERRUPTIONS = 3
 _BUSY_TIMEOUT_SECONDS = 30.0
 
 type Record = dict[str, object]
@@ -234,7 +238,8 @@ CREATE TABLE jobs (
     playlist_title TEXT,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL,
-    finished_at REAL
+    finished_at REAL,
+    interruptions INTEGER NOT NULL DEFAULT 0
 ) STRICT;
 CREATE INDEX jobs_by_finished_at ON jobs (finished_at);
 CREATE TABLE items (
@@ -252,6 +257,7 @@ CREATE TABLE items (
     track_kind TEXT,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL,
+    interruptions INTEGER NOT NULL DEFAULT 0,
     UNIQUE (job_id, position)
 ) STRICT;
 CREATE INDEX items_by_job ON items (job_id, position);
@@ -609,12 +615,7 @@ class Store:
                         connection, 'artifact = ? AND video_id = ? AND (item_id IS NULL OR item_id != ?)',
                         (artifact, item['video_id'], item_id),
                     )
-            unfinished = connection.execute(
-                "SELECT 1 FROM items WHERE job_id = ? AND state IN ('queued', 'running')",
-                (item['job_id'],),
-            ).fetchone()
-            if unfinished is None:
-                self._update_job(connection, item['job_id'], state=JobState.FINISHED)
+            self._finish_job_if_done(connection, item['job_id'])
 
     # Failures
 
@@ -634,17 +635,41 @@ class Store:
     # Maintenance
 
     def recover(self) -> None:
-        """Requeue work interrupted by a restart (DESIGN 5.12).
+        """Requeue work interrupted by a restart or a crash, up to a cap per unit (DESIGN 5.12, C59).
 
-        Running items return to queued, and jobs left expanding return to queued so they expand
-        again.
+        Each running item and each job left expanding counts one more interruption. Below
+        ``MAX_INTERRUPTIONS`` the item returns to queued, and the job returns to queued so that it
+        expands again. At the cap the unit fails instead, with an ``internal`` failure record: an item
+        in its job's primary phase, with its outcomes left unknown, and an expansion in phase
+        ``expanding``. A job with no unit left then finishes.
         """
         with self._write() as connection:
             now = self._clock()
-            for row in connection.execute("SELECT id FROM items WHERE state = 'running' ORDER BY rowid").fetchall():
-                self._update_item(connection, row['id'], now, state=ItemState.QUEUED)
-            for row in connection.execute("SELECT id FROM jobs WHERE state = 'expanding' ORDER BY seq").fetchall():
-                self._update_job(connection, row['id'], state=JobState.QUEUED)
+            items = connection.execute(
+                'SELECT items.id, items.job_id, items.interruptions, jobs.kind FROM items'
+                " JOIN jobs ON jobs.id = items.job_id WHERE items.state = 'running' ORDER BY items.rowid",
+            ).fetchall()
+            for row in items:
+                count = row['interruptions'] + 1
+                if count < MAX_INTERRUPTIONS:
+                    self._update_item(connection, row['id'], now, state=ItemState.QUEUED, interruptions=count)
+                    continue
+                logger.warning('Item %s was interrupted %d times; failing it', row['id'], count)
+                self._update_item(connection, row['id'], now, state=ItemState.FAILED, interruptions=count)
+                phase = Phase.MEDIA if JobKind(row['kind']).wants_media else Phase.CAPTIONS
+                self._insert_failure(connection, row['job_id'], row['id'], _interrupted(phase, count))
+                self._finish_job_if_done(connection, row['job_id'])
+            jobs = connection.execute(
+                "SELECT id, interruptions FROM jobs WHERE state = 'expanding' ORDER BY seq",
+            ).fetchall()
+            for row in jobs:
+                count = row['interruptions'] + 1
+                if count < MAX_INTERRUPTIONS:
+                    self._update_job(connection, row['id'], state=JobState.QUEUED, interruptions=count)
+                    continue
+                logger.warning('Expansion of job %s was interrupted %d times; failing it', row['id'], count)
+                self._update_job(connection, row['id'], state=JobState.FINISHED, interruptions=count)
+                self._insert_failure(connection, row['id'], None, _interrupted(Phase.EXPANDING, count))
 
     # Row helpers
 
@@ -677,6 +702,14 @@ class Store:
         if cursor.rowcount != 1:
             raise LookupError(f'No {table} row with {key} {value!r}')
 
+    def _finish_job_if_done(self, connection: sqlite3.Connection, job_id: str) -> None:
+        """Finish a job once none of its items is queued or running."""
+        unfinished = connection.execute(
+            "SELECT 1 FROM items WHERE job_id = ? AND state IN ('queued', 'running')", (job_id,),
+        ).fetchone()
+        if unfinished is None:
+            self._update_job(connection, job_id, state=JobState.FINISHED)
+
     @staticmethod
     def _job_state(connection: sqlite3.Connection, job_id: str) -> JobState:
         """Return a job's state."""
@@ -707,6 +740,14 @@ class Store:
     def _supersede(connection: sqlite3.Connection, condition: str, parameters: tuple[object, ...]) -> None:
         """Delete the uncleared failures matching ``condition``: a later attempt settled them (DESIGN 5.9)."""
         connection.execute(f'DELETE FROM failures WHERE {condition}', parameters)
+
+
+def _interrupted(phase: Phase, count: int) -> NewFailure:
+    """Return the failure that recovery records for a unit it no longer requeues (decision C59)."""
+    return NewFailure(
+        phase, Category.INTERNAL,
+        f'Interrupted {count} times by a restart or a crash of the service; not requeued again (DESIGN 5.12)',
+    )
 
 
 def _artifact_of(phase: Phase, kind: JobKind) -> _Artifact:

@@ -156,11 +156,13 @@ curl http://localhost:8000/health   # 200 when the database, staging marker and 
 - A download that has not finished when the process ends leaves a hidden `.staging-*` directory on the share, with its partial file. This holds for an abandoned download and for a killed process.
 - A restart does not remove that directory. Delete such directories by hand while the service is stopped ([DESIGN 5.12](DESIGN.md#512-restart-recovery)).
 
-**A job that makes no progress.**
+**When the worker fails.**
 
-- A database failure while the worker saves a result can leave a job `running` or `expanding` with no further progress. `/health` can still answer 200.
-- If a job stays in that state, restart the service. Restart recovery requeues the work, and a file that is already published counts as `existing`.
-- Automatic recovery is planned ([T35](tasks/open/T35.md), DESIGN C53). The service will then exit on such a failure, so that Docker restarts it.
+- An error that the worker cannot handle, such as a database failure while it saves a result, makes the process exit with status 1 after 60 seconds. The log names the error.
+- During those 60 seconds the API still answers, and `/health` answers 503 with `threads.worker` false.
+- Docker then restarts the service. Restart recovery requeues the interrupted work, and a file that is already published counts as `existing`.
+- An item or a playlist expansion that has been interrupted three times fails with an `internal` failure instead. Restarts with `docker compose restart` count too. Resubmit the job when the cause is fixed.
+- A database that stays broken gives one restart about every minute. The log of each turn shows the cause ([DESIGN 5.12](DESIGN.md#512-restart-recovery)).
 
 ## Updating dependencies
 

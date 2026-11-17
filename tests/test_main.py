@@ -102,9 +102,9 @@ class ServiceProcess:
         except OSError:
             return False
 
-    def submit(self):
-        """Submit the test's video and return the job's ID."""
-        status, job = self.request('POST', '/jobs/videos', {'url': VIDEO_URL})
+    def submit(self, url=VIDEO_URL):
+        """Submit a media job for the test's video, or for another URL, and return the job's ID."""
+        status, job = self.request('POST', '/jobs/videos', {'url': url})
         assert status == 202
         return job['id']
 
@@ -167,8 +167,16 @@ class Lifecycle:
 
     def downloads(self):
         """Return how many downloads have started, across every process of the test."""
-        downloads = self.flag('downloads')
-        return len(downloads.read_text().splitlines()) if downloads.exists() else 0
+        return self.count('downloads')
+
+    def expansions(self):
+        """Return how many playlist expansions have run, across every process of the test."""
+        return self.count('expansions')
+
+    def count(self, name):
+        """Return the number of lines in a control file that the service processes append to."""
+        path = self.flag(name)
+        return len(path.read_text().splitlines()) if path.exists() else 0
 
     def start(self, grace='10'):
         """Start a service process on a free loopback port and wait until it is healthy."""
@@ -318,6 +326,56 @@ def test_a_stalled_api_database_keeps_the_process_alive_until_it_is_killed(lifec
     assert [path.read_bytes() for path in lifecycle.artifacts()] == [lifecycle_service.COMPLETE]
     # The request whose transaction never committed left no job behind.
     assert [entry['id'] for entry in restarted.request('GET', '/jobs')[1]['jobs']] == [job_id]
+
+
+def assert_exited_for_restart(service):
+    """Check that a failed worker ended the process with status 1 after logging why, without a shutdown (C53)."""
+    assert service.wait_exit() == 1
+    output = service.output()
+    assert 'The worker cannot continue' in output
+    assert 'Exiting with status 1' in output
+    assert 'Application shutdown complete' not in output
+
+
+def test_a_failed_save_after_publication_exits_and_the_restart_finds_the_file(lifecycle):
+    """Review F1: the save fails after the MP4 is published; the process exits, and a restart completes the item.
+
+    The test's second start stands in for Docker's restart policy.
+    """
+    lifecycle.flag('fail-save').touch()
+    service = lifecycle.start()
+    job_id = service.submit()
+    assert_exited_for_restart(service)
+    assert 'injected failure: fail-save' in service.output()
+    [published] = lifecycle.artifacts()
+    before = published.stat()
+
+    restarted = lifecycle.start()
+    job = restarted.wait_finished(job_id)
+    item = job['items'][0]
+    assert (item['state'], item['media']['outcome']) == ('done', 'existing')
+    assert job['failures'] == []
+    after = published.stat()
+    assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
+    assert lifecycle.downloads() == 1
+
+
+def test_a_failed_expansion_save_exits_and_the_restart_expands_again(lifecycle):
+    """A playlist whose entries could not be saved is expanded again after the restart, then downloaded (C53)."""
+    lifecycle.flag('fail-expansion-save').touch()
+    service = lifecycle.start()
+    job_id = service.submit('https://www.youtube.com/playlist?list=PLlist')
+    assert_exited_for_restart(service)
+    assert 'injected failure: fail-expansion-save' in service.output()
+    assert lifecycle.expansions() == 1
+
+    restarted = lifecycle.start()
+    job = restarted.wait_finished(job_id)
+    assert [(item['video_id'], item['state'], item['media']['outcome']) for item in job['items']] == [
+        (lifecycle_service.PLAYLIST_VIDEO, 'done', 'downloaded'),
+    ]
+    assert lifecycle.expansions() == 2
+    assert lifecycle.downloads() == 1
 
 
 @pytest.mark.parametrize('host', ['192.0.2.1', 'example.invalid'])

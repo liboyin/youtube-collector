@@ -7,8 +7,11 @@ thread with its own connection, so the event loop never blocks on SQLite.
 """
 
 import asyncio
+import contextlib
 import logging
+import os
 import sqlite3
+import sys
 import threading
 import time
 from collections.abc import AsyncIterator, Callable
@@ -49,6 +52,8 @@ class Components:
         clock: Wall-clock epoch seconds.
         monotonic: A monotonic clock.
         release: Frees what the adapters hold; runs once the worker has stopped, or if startup fails.
+        sleep: Waits out the pause before a fatal exit (decision C59).
+        exit_process: Ends the process at once with a status, without any shutdown (decision C53).
     """
 
     media: MediaSource
@@ -56,6 +61,8 @@ class Components:
     clock: Callable[[], float] = field(default=time.time)
     monotonic: Callable[[], float] = field(default=time.monotonic)
     release: Callable[[], None] = field(default=lambda: None)
+    sleep: Callable[[float], None] = field(default=time.sleep)
+    exit_process: Callable[[int], object] = field(default=os._exit)
 
 
 def default_components(settings: Settings) -> Components:
@@ -112,11 +119,36 @@ class _Runtime:
         initialize(settings.database)
         self.worker = Worker(
             open_store=self._open_store, staging_root=settings.staging_dir, media=components.media,
-            captions=components.captions, monotonic=components.monotonic, on_stopped=components.release,
+            captions=components.captions, monotonic=components.monotonic, on_fatal=self._fatal,
+            on_stopped=components.release,
         )
         self.worker_thread = threading.Thread(target=self.worker.run, name='youtube-worker', daemon=True)
         self._local = threading.local()
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='api-db')
+
+    def _fatal(self, error: BaseException) -> None:
+        """End the process with status 1 after the fatal pause, for Docker to restart it (decisions C53, C59).
+
+        Runs on the worker thread once its run has ended on ``error``. There is no graceful shutdown:
+        the fault is typically a broken database, on which the API's database thread can block without
+        a bound (C50). The API keeps serving during the pause, and ``/health`` reports the failed
+        worker. A SIGTERM during the pause still shuts down normally, because the thread is a daemon.
+        The exit is the contract and the diagnostics are best effort: nothing that the pause or a flush
+        raises can prevent it, because a process left alive without its worker is never restarted.
+        """
+        try:
+            logger.critical(
+                'The worker failed (%s); exiting with status 1 in %s seconds for Docker to restart the service',
+                type(error).__name__, self.settings.fatal_pause,
+            )
+            self.components.sleep(self.settings.fatal_pause)
+            logger.critical('Exiting with status 1')
+            for flush in (*(handler.flush for handler in logging.getLogger().handlers), sys.stdout.flush,
+                          sys.stderr.flush):
+                with contextlib.suppress(Exception):  # a lost log line must not keep the process alive
+                    flush()
+        finally:
+            self.components.exit_process(1)
 
     def _open_store(self) -> Store:
         """Open a store for the calling thread (decision C36)."""
@@ -301,6 +333,8 @@ def create_app(
     async def health(rt: service) -> JSONResponse:
         """Database, staging marker, worker liveness and yt-dlp version, without contacting YouTube (5.14).
 
+        The worker counts as alive while its thread runs and its run has not failed.
+
         The staging result is the worker's cached check with its age, so this never touches the
         share (C25). 200 when healthy, 503 otherwise, with the same body.
         """
@@ -313,7 +347,8 @@ def create_app(
         age = None if check is None else rt.components.monotonic() - check.checked_at
         staging_ok = check is not None and check.marker_present and age is not None \
             and age <= rt.settings.staging_health_max_age
-        threads = {'worker': rt.worker_thread.is_alive()}
+        # A failed worker's thread lives on only to pause before the process exits (decision C59).
+        threads = {'worker': rt.worker_thread.is_alive() and not rt.worker.failed}
         healthy = database_error is None and staging_ok and all(threads.values())
         body = {
             'healthy': healthy,

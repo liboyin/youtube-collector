@@ -5,6 +5,7 @@ import os
 import sqlite3
 import threading
 from dataclasses import dataclass
+from unittest.mock import patch
 
 import pytest
 import requests
@@ -147,11 +148,19 @@ def clock():
 
 
 @pytest.fixture
-def worker(db_path, root, media, captions, clock):
+def fatal():
+    """Record the errors a worker reports as fatal; teardown fails if any is left unclaimed."""
+    errors = []
+    yield errors
+    assert errors == [], f'unexpected fatal worker errors: {errors}'
+
+
+@pytest.fixture
+def worker(db_path, root, media, captions, clock, fatal):
     """Provide a worker on the test's store, staging root and fakes."""
     return testee.Worker(
         open_store=lambda: store.Store(db_path, lambda: 1_000_000.0), staging_root=root, media=media,
-        captions=captions, monotonic=clock, idle_wait=60, pause_wait=60, error_wait=0,
+        captions=captions, monotonic=clock, on_fatal=fatal.append, idle_wait=60, pause_wait=60,
     )
 
 
@@ -592,52 +601,128 @@ def test_run_recovers_processes_and_stops(worker, db, media, owned_threads):
     assert item_of(db, job)['state'] == 'done'
 
 
-def stoppable_worker(db_path, root, media, captions, clock, on_stopped, open_store=None):
-    """Return a worker that reports when its run ends."""
+def stoppable_worker(db_path, root, media, captions, clock, events, open_store=None):
+    """Return a worker that records in ``events`` when it releases its adapters and when it reports a fatal error."""
     return testee.Worker(
         open_store=open_store or (lambda: store.Store(db_path, lambda: 1_000_000.0)), staging_root=root, media=media,
-        captions=captions, monotonic=clock, idle_wait=60, pause_wait=60, error_wait=0, on_stopped=on_stopped,
+        captions=captions, monotonic=clock, idle_wait=60, pause_wait=60,
+        on_stopped=lambda: events.append(('stopped', threading.current_thread())),
+        on_fatal=lambda error: events.append(('fatal', error)),
     )
 
 
 def test_on_stopped_runs_once_on_the_worker_thread_after_the_loop_ends(db_path, root, media, captions, clock):
-    """The release happens on the thread that used the adapters, after its last step."""
-    threads = []
-    worker = stoppable_worker(db_path, root, media, captions, clock, lambda: threads.append(threading.current_thread()))
+    """The release happens on the thread that used the adapters, after its last step; a stop is not fatal."""
+    events = []
+    worker = stoppable_worker(db_path, root, media, captions, clock, events)
     worker.stop()
     worker.run()
-    assert threads == [threading.current_thread()]
+    assert events == [('stopped', threading.current_thread())]
+    assert not worker.failed
 
 
-def test_on_stopped_runs_when_the_worker_dies_during_recovery(db_path, root, media, captions, clock):
-    """A worker that never reaches its loop still releases what the adapters hold."""
-    released = []
+class Fatal(BaseException):
+    """An error that is not an ``Exception``, as a ``KeyboardInterrupt`` is not."""
 
-    def broken():
-        raise sqlite3.OperationalError('unavailable')
 
-    worker = stoppable_worker(db_path, root, media, captions, clock, lambda: released.append(1), open_store=broken)
-    with pytest.raises(sqlite3.OperationalError):
+def broken_open():
+    """Fail to open the worker's store."""
+    raise sqlite3.OperationalError('unable to open database file')
+
+
+def broken_recover(db_path):
+    """Return a store opener whose recovery fails."""
+
+    def open_store():
+        opened = store.Store(db_path, lambda: 1_000_000.0)
+        opened.recover = lambda: (_ for _ in ()).throw(sqlite3.OperationalError('disk I/O error'))
+        return opened
+
+    return open_store
+
+
+@pytest.mark.parametrize('cause', ['open', 'recover'])
+def test_a_worker_that_cannot_start_reports_one_fatal_error_after_releasing(db_path, root, media, captions, clock,
+                                                                            cause, caplog):
+    """A failure to open the store or to recover ends the run before any step, and is fatal exactly once (C53)."""
+    events = []
+    open_store = broken_open if cause == 'open' else broken_recover(db_path)
+    worker = stoppable_worker(db_path, root, media, captions, clock, events, open_store=open_store)
+    worker.step = lambda store_: pytest.fail('no step may run')
+    with caplog.at_level(logging.CRITICAL, logger=testee.__name__):
         worker.run()
-    assert released == [1]
+    [stopped, (kind, error)] = events
+    assert stopped == ('stopped', threading.current_thread())
+    assert kind == 'fatal' and isinstance(error, sqlite3.OperationalError)
+    assert worker.failed
+    assert 'The worker cannot continue' in caplog.text
 
 
-def test_run_survives_a_failing_step(worker, caplog):
-    """An unexpected error in one step is logged and the loop continues."""
+@pytest.mark.parametrize('error', [sqlite3.OperationalError('database is locked'), Fatal('interrupted')])
+def test_an_error_escaping_a_step_ends_the_run_and_is_fatal_once(db_path, root, media, captions, clock, error):
+    """The loop never retries after an escaped error, which would leave its unit running while it serves (C53)."""
+    events = []
     calls = []
+    worker = stoppable_worker(db_path, root, media, captions, clock, events)
 
     def step(store_):
         calls.append(1)
-        if len(calls) == 1:
-            raise RuntimeError('database is locked')
-        worker.stop()
-        return testee.Step.IDLE
+        raise error
 
     worker.step = step
-    with caplog.at_level(logging.ERROR, logger=testee.__name__):
+    worker.run()
+    assert calls == [1]
+    assert [event[0] for event in events] == ['stopped', 'fatal']
+    assert events[1][1] is error
+    assert worker.failed
+
+
+def test_a_failing_release_is_fatal(db_path, root, media, captions, clock):
+    """An error from ``on_stopped`` also ends the thread, so it is reported like any other."""
+    fatal = []
+
+    def release():
+        raise RuntimeError('close failed')
+
+    worker = testee.Worker(
+        open_store=lambda: store.Store(db_path, lambda: 1_000_000.0), staging_root=root, media=media,
+        captions=captions, monotonic=clock, on_fatal=fatal.append, on_stopped=release,
+    )
+    worker.stop()
+    worker.run()
+    assert [str(error) for error in fatal] == ['close failed']
+    assert worker.failed
+
+
+def test_a_store_failure_after_publication_leaves_the_item_for_recovery(worker, db, db_path, media, captions, clock,
+                                                                         root, fatal):
+    """The reproduction of review F1: the save fails after the MP4 is published, and the run ends fatally (C53).
+
+    Recovery then requeues the item, and the next run finds the file instead of downloading it again.
+    """
+    job = submit(db, kind=store.JobKind.VIDEOS)
+
+    def failing_finish(self, item_id, result):
+        raise sqlite3.OperationalError('disk I/O error')
+
+    with patch.object(store.Store, 'finish_item', failing_finish):
         worker.run()
-    assert len(calls) == 2
-    assert 'Worker step failed' in caplog.text
+    [error] = fatal
+    fatal.clear()
+    assert isinstance(error, sqlite3.OperationalError)
+    assert item_of(db, job)['state'] == 'running'
+    assert len(files(root)) == 1
+
+    restarted = testee.Worker(
+        open_store=lambda: pytest.fail('the test drives this worker by step'), staging_root=root, media=media,
+        captions=captions, monotonic=clock, on_fatal=fatal.append,
+    )
+    with store.Store(db_path, lambda: 1_000_000.0) as own:
+        own.recover()
+        assert restarted.step(own) is testee.Step.PROCESSED
+    item = item_of(db, job)
+    assert (item['state'], item['media']['outcome']) == ('done', 'existing')
+    assert [call[0] for call in media.calls].count('download') == 1
 
 
 def test_run_waits_while_paused_until_stopped(worker, root, owned_threads):

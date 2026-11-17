@@ -8,13 +8,12 @@ This file holds the recommended order, the constraints that several tasks share,
 
 ## Recommended order
 
-The decisions of the 2026-11-14 review (DESIGN C53 to C60) produced the mechanism of T35 and the tasks T40 to T52. This is the suggested sequence. Each group is small enough for the grouped-task skill.
+The decisions of the 2026-11-14 review (DESIGN C53 to C60) produced the tasks T40 to T52, and the mechanism of T35, which is done. This is the suggested sequence. Each group is small enough for the grouped-task skill.
 
-1. T35: crash and restart. Land it before the next group, which rewrites the same worker code.
-2. T40, then T41 and T42: local scratch, publication order and health. T41 and T42 depend on T40.
-3. T43, then T44: the cookie setting and the report of stale cookies. They add `/health` fields, as T42 does, so do not run them in parallel with T42.
-4. T51, then T46 and T47: the caption interface, then the contract tests and end-to-end tests that are written against the result.
-5. T49, then the remaining runs of T25 with it. T48 goes alongside the host checks of T10. T52 can land at any time after groups 2 and 4.
+1. T40, then T41 and T42: local scratch, publication order and health. T41 and T42 depend on T40.
+2. T43, then T44: the cookie setting and the report of stale cookies. They add `/health` fields, as T42 does, so do not run them in parallel with T42.
+3. T51, then T46 and T47: the caption interface, then the contract tests and end-to-end tests that are written against the result.
+4. T49, then the remaining runs of T25 with it. T48 goes alongside the host checks of T10. T52 can land at any time after groups 1 and 3.
 
 These tasks are outside the sequence:
 
@@ -35,7 +34,6 @@ A check that needs a Docker daemon is a host check, because the dev container ha
 - [T14](open/T14.md) — Low, deferred. Let COVERAGE_THRESHOLD lower the coverage gate.
 - [T25](open/T25.md) — Low. First end-to-end run against real YouTube.
 - [T34](open/T34.md) — Medium, blocked on the user's orchestrator design. Integrate the orchestrator with the collector.
-- [T35](open/T35.md) — High. Exit the process when the worker cannot continue, so Docker restarts it (C53, C59).
 - [T39](open/T39.md) — Medium, deferred until a run with cookies. Make configured Firefox authentication available to caption acquisition.
 - [T40](open/T40.md) — High. Download and merge media in a local scratch directory, then copy it to the share (C54).
 - [T41](open/T41.md) — Medium. Publish the SRT before the MP4 (C57).

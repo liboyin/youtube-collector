@@ -8,12 +8,17 @@ a test steers it from another process:
 - While ``hold-download`` exists, a download waits after writing partial bytes (``download-entered`` announces it).
 - With ``stall-api-database``, the API's database thread blocks for good inside its next transaction.
 - With ``stall-save``, the worker blocks for good while saving the outcome of a finished download.
+- With ``fail-save``, saving the outcome of a finished download fails once; the flag is then removed.
+- With ``fail-expansion-save``, saving an expanded playlist fails once; the flag is then removed.
 - With ``connect-to`` holding ``HOST PORT``, each metadata request first opens a connection there and closes it.
 
-Each stall announces itself through a ``*-stalled`` file, and each download appends a line to ``downloads``.
+Each stall announces itself through a ``*-stalled`` file. Each download appends a line to ``downloads``, and each
+playlist expansion to ``expansions``. The fatal pause is shortened, so a failed worker ends the process quickly.
 """
 
+import dataclasses
 import socket
+import sqlite3
 import sys
 import threading
 import time
@@ -24,7 +29,7 @@ import network_guard
 import youtube_collector
 import youtube_collector.__main__ as entrypoint
 from youtube_collector.api import Components
-from youtube_collector.youtube import VideoInfo
+from youtube_collector.youtube import Playlist, PlaylistVideo, VideoInfo
 
 PARTIAL = b'partial'
 COMPLETE = b'complete media'
@@ -32,6 +37,8 @@ COMPLETE = b'complete media'
 REQUEST_SHUTDOWN_SECONDS = 0.2
 POLL_SECONDS = 0.01
 CONNECT_SECONDS = 10.0
+FATAL_PAUSE_SECONDS = 0.2
+PLAYLIST_VIDEO = 'abcdefghijk'
 
 
 class FakeMedia:
@@ -42,8 +49,11 @@ class FakeMedia:
         self.control = control
 
     def expand_playlist(self, url):
-        """Reject playlists, which these tests do not use."""
-        raise NotImplementedError(url)
+        """Return a one-entry playlist, recording the expansion."""
+        with (self.control / 'expansions').open('a') as expansions:
+            expansions.write(f'{url}\n')
+        (self.control / 'expanded').touch()
+        return Playlist('A list', (PlaylistVideo(PLAYLIST_VIDEO, 'A video'),))
 
     def video_info(self, url):
         """Return metadata for the video in the URL, first connecting where ``connect-to`` says, if it exists."""
@@ -89,14 +99,24 @@ def controlled_clock(control):
         (control / f'{name}-stalled').touch()
         threading.Event().wait()
 
+    def fail_once(name):
+        (control / name).unlink()
+        raise sqlite3.OperationalError(f'injected failure: {name}')
+
     def clock():
         thread = threading.current_thread().name
         if thread.startswith('api-db') and (control / 'stall-api-database').exists():
             stall('api-database')
-        # After a finished download the worker's next clock read is the write that saves its outcome.
-        if thread == 'youtube-worker' and (control / 'stall-save').exists() \
-                and (control / 'download-finished').exists():
-            stall('save')
+        # After a finished download the worker's next clock read is the write that saves its outcome, and
+        # after an expansion it is the write that saves the entries.
+        if thread == 'youtube-worker' and (control / 'download-finished').exists():
+            if (control / 'stall-save').exists():
+                stall('save')
+            if (control / 'fail-save').exists():
+                fail_once('fail-save')
+        if thread == 'youtube-worker' and (control / 'expanded').exists() \
+                and (control / 'fail-expansion-save').exists():
+            fail_once('fail-expansion-save')
         return time.time()
 
     return clock
@@ -109,7 +129,9 @@ def main():
     print(f'PACKAGE {youtube_collector.__file__}', flush=True)
     real_create_app = entrypoint.create_app
     components = Components(media=FakeMedia(control), captions=FakeCaptions(), clock=controlled_clock(control))
-    entrypoint.create_app = lambda settings: real_create_app(settings, lambda _settings: components)
+    entrypoint.create_app = lambda settings: real_create_app(
+        dataclasses.replace(settings, fatal_pause=FATAL_PAUSE_SECONDS), lambda _settings: components,
+    )
     entrypoint.REQUEST_SHUTDOWN_SECONDS = REQUEST_SHUTDOWN_SECONDS
     entrypoint.main()
 

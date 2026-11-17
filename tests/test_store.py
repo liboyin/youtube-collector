@@ -136,7 +136,7 @@ def test_initialize_rolls_back_a_failed_schema_creation(tmp_path):
         assert connection.execute("SELECT name FROM sqlite_master WHERE name = 'jobs'").fetchone() is None
 
 
-@pytest.mark.parametrize('version', [1, 99])
+@pytest.mark.parametrize('version', [1, 2, 99])
 def test_initialize_rejects_another_schema_version(tmp_path, version):
     """A database from another schema version is refused with its version: there is no migration (C44)."""
     path = tmp_path / 'other.sqlite3'
@@ -787,6 +787,86 @@ def test_recover_requeues_running_items_and_expanding_jobs(store):
     assert store.get_job(video['id'])['items'][0]['state'] == 'queued'
     assert store.get_job(playlist['id'])['state'] == 'queued'
     assert store.next_work(0).item.id == item_id
+
+
+def interruptions(db_path, table, row_id):
+    """Return a row's interruption count, which the API does not publish."""
+    with closing(sqlite3.connect(db_path)) as connection:
+        return connection.execute(f'SELECT interruptions FROM {table} WHERE id = ?', (row_id,)).fetchone()[0]
+
+
+@pytest.mark.parametrize(('kind', 'phase'), [
+    (testee.JobKind.VIDEOS, 'media'), (testee.JobKind.VIDEOS_WITH_CAPTIONS, 'media'),
+    (testee.JobKind.CAPTIONS, 'captions'),
+])
+def test_recover_fails_an_item_at_the_interruption_cap(store, db_path, kind, phase):
+    """An item is requeued below the cap and failed at it, so it cannot drive a restart loop forever (C59)."""
+    job = submit_video(store, kind=kind)
+    item_id = job['items'][0]['id']
+    for count in range(1, testee.MAX_INTERRUPTIONS):
+        store.start_item(item_id)
+        store.recover()
+        assert job_item(store, job['id'])['state'] == 'queued'
+        assert interruptions(db_path, 'items', item_id) == count
+    store.start_item(item_id)
+    store.recover()
+    finished = store.get_job(job['id'])
+    item = finished['items'][0]
+    assert (finished['state'], item['state']) == ('finished', 'failed')
+    assert interruptions(db_path, 'items', item_id) == testee.MAX_INTERRUPTIONS
+    assert all(item[artifact]['outcome'] is None for artifact in ('media', 'captions') if artifact in item)
+    [record] = finished['failures']
+    assert (record['item_id'], record['phase'], record['category']) == (item_id, phase, 'internal')
+    assert f'Interrupted {testee.MAX_INTERRUPTIONS} times' in record['message']
+    assert store.next_work(0) is None
+
+
+def test_a_capped_item_leaves_the_rest_of_its_job_and_later_jobs_running(store):
+    """Failing one item at the cap leaves its job running for its other items, and other jobs proceed."""
+    playlist = submit_playlist(store)
+    expand(store, playlist['id'], [VIDEO, OTHER_VIDEO])
+    capped = job_item(store, playlist['id'])['id']
+    later = submit_video(store, video_id=OTHER_VIDEO)
+    for _ in range(testee.MAX_INTERRUPTIONS):
+        store.start_item(capped)
+        store.recover()
+    job = store.get_job(playlist['id'])
+    assert job['state'] == 'running'
+    assert [item['state'] for item in job['items']] == ['failed', 'queued']
+    assert store.next_work(0).job_id == playlist['id']
+    assert store.next_work(store.next_work(0).job_seq).job_id == later['id']
+
+
+def test_recover_fails_an_expansion_at_the_interruption_cap(store, db_path):
+    """An expansion is requeued below the cap and finished with an expansion failure at it (C59)."""
+    job = submit_playlist(store)
+    for count in range(1, testee.MAX_INTERRUPTIONS):
+        store.start_expansion(job['id'])
+        store.recover()
+        assert store.get_job(job['id'])['state'] == 'queued'
+        assert interruptions(db_path, 'jobs', job['id']) == count
+    store.start_expansion(job['id'])
+    store.recover()
+    finished = store.get_job(job['id'])
+    assert (finished['state'], finished['items']) == ('finished', [])
+    [record] = finished['failures']
+    assert (record['phase'], record['category'], record['item_id']) == ('expanding', 'internal', None)
+    assert record['playlist_id'] == PLAYLIST
+    assert store.next_work(0) is None
+
+
+def test_a_finished_unit_keeps_no_effect_from_its_interruptions(store):
+    """Interruptions count only units found running: a recovered item that then finishes is unaffected."""
+    job = submit_video(store, kind=testee.JobKind.VIDEOS)
+    item_id = job['items'][0]['id']
+    for _ in range(testee.MAX_INTERRUPTIONS - 1):
+        store.start_item(item_id)
+        store.recover()
+    store.start_item(item_id)
+    store.finish_item(item_id, media_done())
+    store.recover()
+    assert job_item(store, job['id'])['state'] == 'done'
+    assert store.list_failures() == []
 
 
 def test_update_rejects_unknown_rows(store):
