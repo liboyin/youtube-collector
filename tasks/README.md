@@ -52,6 +52,7 @@ Before implementation, expand the task's file in place into a full boundary. Use
 ### Choose the order
 
 - Use the explicit dependencies and TODO's recommended order to choose the next task.
+- Severity and readiness are separate. A defect that needs a decision is not Non-blocking for that reason.
 - A non-blocking issue does not block unrelated work. Do not require a whole phase to close first.
 
 ### Close a task
@@ -71,16 +72,6 @@ Do these steps in the closing commit:
    - README's status line and operating sections. Current operations belong in README.
    - TODO's recommended order.
    - Each open task that names the closed task.
-
-The record preserves these items. Omit an item that does not apply.
-
-- The task's origin, the accepted boundary and each superseding decision.
-- The revalidation of the task against the code.
-- The implementation, or another disposition.
-- The validation commands and their results, with the revision and the environment.
-- The mutation evidence that was required or performed.
-- The review findings, with their validation and dispositions.
-- The limitations and the cleanup.
 
 These rules apply to the record:
 
@@ -135,11 +126,12 @@ Check that the dependencies between the tasks are still consistent. The [documen
 
 ## Closed record
 
-At closing, the file gains the `**Outcome:**` line and these sections after its boundary, as the records in [closed/](closed/) show:
+At closing, the file gains the `**Outcome:**` line. Preserve its origin, accepted boundary and superseding decisions. Append these sections after the boundary, omitting those that do not apply:
 
-- Implementation.
-- Validation.
-- Mutation evidence.
-- Review.
+- Revalidation: the check of the task against the code.
+- Implementation, or another disposition.
+- Validation: the commands and results, with the revision and environment.
+- Mutation evidence: what was required and what was performed.
+- Review: the findings, with their validation and dispositions.
 - Host checks.
-- Limitations.
+- Limitations and cleanup.

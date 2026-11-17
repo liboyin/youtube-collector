@@ -51,7 +51,7 @@ Wait for the reviewer's exit status and report before you decide on any finding.
 These rules apply to the snapshot:
 
 - If you edit the candidate or run a gate on it after the snapshot, take a new snapshot.
-- A failed snapshot run is a change to investigate.
+- Write each snapshot outside the repository. A failed snapshot run blocks acceptance of the review.
 - Never inspect or hash ignored untracked content.
 - After a successful comparison, you MAY discard the snapshot, unless an investigation or evidence reuse needs it.
 
@@ -124,6 +124,7 @@ Verify safely and within bounds:
 - Check the supplied evidence independently, as [Evidence Retention](#evidence-retention) describes.
 - If required evidence is missing, produce it in a scratch run or return `Review blocked`.
 - If the protection of a property is doubtful, request more mutants.
+- A kill needs a relevant behavioral failure. Collection, syntax, import, build, lint, environment and provenance failures are not kills.
 
 Then finish:
 

@@ -231,31 +231,6 @@ ruff check .
   2. Check the binary against the SHA-256 that the release publishes.
   3. Run it in a scratch copy of the repository without `.env`, with `COMPOSE_PROJECT_NAME` unset.
 
-## Shared tools
-
-Three tools run from the sibling checkout `../agent-workflow-common`. This repository holds their configuration in `agent-workflow.json` and keeps no copies of their implementations or tests.
-
-| Tool | Purpose |
-|---|---|
-| `../agent-workflow-common/tools/check_docs.py` | Documentation checks and reference reports |
-| `../agent-workflow-common/tools/snapshot.py` | Review integrity snapshots |
-| `../agent-workflow-common/tools/dispatch.py` | Codex CLI reviewer dispatch |
-
-- Both devcontainers run `.devcontainer/postCreateCommand.sh`, which clones the tools into `$HOME/persist/agent-workflow-common` on the existing `dev_persist` volume.
-- The hook changes only `/workspaces` ownership to `ubuntu:ubuntu` with `sudo chown`, then links the checkout at `/workspaces/agent-workflow-common`.
-- First setup needs GitHub access. Existing checkouts are reused without pulls or resets, so local work survives recreation of the container.
-- Setup stops if the sibling path conflicts, the checkout is invalid, required tools are missing, or cloning fails. It preserves existing paths.
-- Resolve a reported conflict explicitly. The hook never replaces another checkout or removes an incomplete one.
-- This checkout is separate from ClipboardTTS's checkout. Commit and push shared changes to transfer them between environments.
-- Temporary review evidence stays outside the repository. Governance, documentation and durable review records remain tracked but are excluded from Docker's build context.
-- The tools use Python 3.9 or later and the standard library. Their `--help` text describes the arguments.
-- The checkout determines the tool version. No version is pinned, matching ClipboardTTS.
-- Change shared tools and run their tests in their repository. Verify both consumers after shared changes.
-- Keep `mutate.py` and `worktree_gates.py` local. They implement this project's Python test isolation and gates.
-- From a review worktree, use the shared checkout's absolute tool path and run it with the worktree as the current directory.
-- For CLI dispatch from another directory, pass the worktree with `--target`.
-- [project-reviews.md](project-reviews.md) preserves historical project reviews. Task state remains in [tasks/](tasks/).
-
 **The documentation check.** [AGENTS.md](AGENTS.md#validation-and-review) requires it for every change that touches a Markdown file.
 
 - Run `../agent-workflow-common/tools/check_docs.py` from the repository. It takes less than a second.
@@ -281,3 +256,28 @@ Three tools run from the sibling checkout `../agent-workflow-common`. This repos
 - mypy reports missing imports as errors.
 - `pathlib_extensions` and `yt_dlp` ship no type information, so `pyproject.toml` gives them an `ignore_missing_imports` override.
 - Tests are intentionally outside the mypy gate.
+
+## Shared tools
+
+Three tools run from the sibling checkout `../agent-workflow-common`. This repository holds their configuration in `agent-workflow.json` and keeps no copies of their implementations or tests.
+
+| Tool | Purpose |
+|---|---|
+| `../agent-workflow-common/tools/check_docs.py` | Documentation checks and reference reports |
+| `../agent-workflow-common/tools/snapshot.py` | Review integrity snapshots |
+| `../agent-workflow-common/tools/dispatch.py` | Codex CLI reviewer dispatch |
+
+- Both devcontainers run `.devcontainer/postCreateCommand.sh`, which clones the tools into `$HOME/persist/agent-workflow-common` on the existing `dev_persist` volume.
+- The hook changes only `/workspaces` ownership to `ubuntu:ubuntu` with `sudo chown`, then links the checkout at `/workspaces/agent-workflow-common`.
+- First setup needs GitHub access. Existing checkouts are reused without pulls or resets, so local work survives recreation of the container.
+- Setup stops if the sibling path conflicts, the checkout is invalid, required tools are missing, or cloning fails. It preserves existing paths.
+- Resolve a reported conflict explicitly. The hook never replaces another checkout or removes an incomplete one.
+- This checkout is separate from ClipboardTTS's checkout. Commit and push shared changes to transfer them between environments.
+- Temporary review evidence stays outside the repository. Governance, documentation and durable review records remain tracked but are excluded from Docker's build context.
+- The tools use Python 3.9 or later and the standard library. Their `--help` text describes the arguments.
+- The checkout determines the tool version. No version is pinned, matching ClipboardTTS.
+- Change shared tools and run their tests in their repository. Verify both consumers after shared changes.
+- Keep `mutate.py` and `worktree_gates.py` local. They implement this project's Python test isolation and gates.
+- From a review worktree, use the shared checkout's absolute tool path and run it with the worktree as the current directory.
+- For CLI dispatch from another directory, pass the worktree with `--target`.
+- [project-reviews.md](project-reviews.md) preserves historical project reviews. Task state remains in [tasks/](tasks/).

@@ -41,7 +41,7 @@ The rules follow ASD-STE100 and ISO 24495-1 loosely. Full compliance with either
 - **Disposition:** the main agent's recorded decision on a finding: fix it, defer it, or accept it without change.
 - **Finding:** a defect that the reviewer reports. Its class is Blocking, Non-blocking or Nit.
 - **Freeze:** to stop editing a candidate, so that the gates and the review assess one fixed state.
-- **Gate:** one of the three required checks: `./check-coverage.sh`, `mypy youtube_collector` and `ruff check .`.
+- **Gate:** one of the required checks that [AGENTS.md](AGENTS.md#validation-and-review) names.
 - **Governance file:** a file that tells agents how to work. [AGENTS.md](AGENTS.md#governance-files) lists them.
 - **Handoff:** the main agent's final message to the user about a change.
 - **Host check:** a check that needs a Docker daemon. It runs on the host, because the devcontainer has no daemon.
