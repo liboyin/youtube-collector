@@ -27,7 +27,7 @@ If a follow-up change is cosmetic, or you want to reuse earlier gate results or 
 
 How to start the reviewer depends on the main agent:
 
-- **Codex:** use `spawn_agent` with `fork_turns: "none"`, `model: "gpt-6.1-sol"` and `reasoning_effort: "medium"`, unless the user selects otherwise. Continue the recorded reviewer with `followup_task`.
+- **Codex:** use `spawn_agent` with `fork_turns: "none"`, `model: "gpt-6.2-sol"` and `reasoning_effort: "high"`, unless the user selects otherwise. Continue the recorded reviewer with `followup_task`.
 - **Claude Code:** run `../agent-workflow-common/tools/dispatch.py` from the repository root. It writes the prompt, starts or resumes the Codex CLI, and prints the session ID and the report. Its `--help` text lists the arguments.
 
 If the requested model or dispatch path is unavailable:
