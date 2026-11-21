@@ -43,7 +43,7 @@ def setup(run_shell_script):
     link = workspace / 'agent-workflow-common'
     scripts = runner.cwd / '.devcontainer'
     scripts.mkdir()
-    for name in ('setup-agent-tools.sh', 'postCreateCommand.sh'):
+    for name in ('setup-agent-tools.sh', 'setup-github-ssh.sh', 'postCreateCommand.sh'):
         shutil.copy2(DEVCONTAINER / name, scripts / name)
     bin_dir = runner.cwd / 'bin'
     bin_dir.mkdir()
