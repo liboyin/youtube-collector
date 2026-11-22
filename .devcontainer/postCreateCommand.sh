@@ -26,4 +26,3 @@ curl -fsSL https://claude.ai/install.sh | bash
 curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh
 # Both installers use this directory; this non-interactive shell has not picked it up.
 export PATH="$HOME/.local/bin:$PATH"
-codex --version

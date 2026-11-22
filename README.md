@@ -34,7 +34,7 @@ Open the repository in VS Code and reopen it in the Dev Container (`.devcontaine
 
 1. It checks offline that `uv.lock` still matches `pyproject.toml`, and it fails if they differ. It never rewrites the lock.
 2. It fetches GitHub's SSH host keys over HTTPS from `api.github.com/meta` and writes them to `~/.ssh/known_hosts`.
-3. It installs Claude Code and standalone Codex with their native installers, and it verifies `codex --version`.
+3. It installs Claude Code and standalone Codex with their native installers.
 
 Sign in with `codex login` before you use the direct CLI review. [The review skill](.agents/skills/adversarial-review/SKILL.md#reviewer-session) owns the dispatch.
 
