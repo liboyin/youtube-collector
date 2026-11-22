@@ -24,5 +24,6 @@ bash .devcontainer/setup-agent-tools.sh "$HOME/persist/agent-workflow-common" /w
 curl -fsSL https://claude.ai/install.sh | bash
 # Install standalone Codex for direct CLI review, without prompting or launching a session.
 curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh
-# Both installers use this directory; this non-interactive shell has not picked it up.
+# Both installers use this directory; this non-interactive shell has not picked it up. No later
+# step needs it now: the export only lets a step added after the installers run claude or codex.
 export PATH="$HOME/.local/bin:$PATH"
