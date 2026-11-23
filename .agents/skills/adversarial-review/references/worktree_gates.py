@@ -35,6 +35,29 @@ GATES = (('./check-coverage.sh',), ('mypy', 'youtube_collector'), ('ruff', 'chec
 MANIFEST = 'worktree-gates.json'
 
 
+def _relative(name: str) -> str:
+    """Return a candidate path as git spells it, without ``.`` or empty components.
+
+    Git reports ``youtube_collector/x.py`` for ``./youtube_collector/x.py``; a path stored in another
+    spelling would never match git's view of the worktree.
+
+    Raises:
+        ValueError: If the path is empty, absolute or climbs with ``..``, so it could leave the tree.
+    """
+    path = PurePosixPath(name)
+    if not path.parts or path.is_absolute() or '..' in path.parts:
+        raise ValueError(f'{name!r} is not a relative path inside the repository')
+    return path.as_posix()
+
+
+def _canonical(name: str) -> bool:
+    """Return whether a path is relative, inside the tree and already in git's spelling."""
+    try:
+        return _relative(name) == name
+    except ValueError:
+        return False
+
+
 def _refuse_symlinked_parents(root: Path, files: list[str]) -> None:
     """Raise ValueError if a file lies below a symlink under ``root``."""
     for name in files:
@@ -52,10 +75,7 @@ def freeze(repo: Path, worktree: Path, files: list[str]) -> None:
         ValueError: If a file is not a relative path inside the repository or lies below a symlink.
         subprocess.CalledProcessError: If git cannot create the worktree.
     """
-    for name in files:
-        path = PurePosixPath(name)
-        if path.is_absolute() or '..' in path.parts:
-            raise ValueError(f'{name} is not a relative path inside the repository')
+    files = [_relative(name) for name in files]
     _refuse_symlinked_parents(repo, files)
     subprocess.run(
         ['git', '-C', str(repo), 'worktree', 'add', '--detach', str(worktree), 'HEAD'], check=True, capture_output=True,
@@ -138,6 +158,9 @@ def reviewed_names(worktree: Path, changed: frozenset[str]) -> tuple[str, list[s
         raise ValueError(f'{worktree} has no freeze record; only a worktree that this tool froze can be used')
     record = json.loads(path.read_text(encoding='utf-8'))
     valid = isinstance(record, dict) and isinstance(record.get('head'), str) and isinstance(record.get('files'), dict)
+    # The freeze stores only canonical relative paths; any other key could make the checks read outside the worktree.
+    if valid and not all(_canonical(name) for name in record['files']):
+        valid = False
     if not valid:
         # A ValueError, not a TypeError: the record is data from disk, and main reports a ValueError as a refusal.
         raise ValueError(f'{path} is not a freeze record of this tool')
@@ -235,7 +258,7 @@ def main(argv: list[str] | None = None) -> int:
     repo, worktree = args.repo.resolve(), args.worktree.resolve()
     try:
         if args.compare or args.remove:
-            changed = frozenset(args.changed)
+            changed = frozenset(_relative(name) for name in args.changed)
             differing = compare(repo, worktree, changed) if args.compare else remove(repo, worktree, changed)
             if differing:
                 where = "the repository's working files" if args.compare else 'the commit at HEAD'

@@ -85,7 +85,8 @@ These rules protect the reviewer's independence:
 
 - Read the [scratch-testing recipe](references/scratch-testing.md) before the first run.
 - If the tool cannot copy the candidate safely, return `Review blocked`.
-- The tool copies every tracked file from the working tree, and only the named untracked ones. If tracked files outside the scope are dirty, freeze the candidate with [worktree_gates.py](references/worktree_gates.py) first. Then pass that worktree to `mutate.py` with `--repo`.
+- The tool copies every tracked file from the working tree, and only the named untracked ones. If tracked files outside the scope are dirty, the main agent freezes the candidate with [worktree_gates.py](references/worktree_gates.py) before dispatch and supplies that worktree as the candidate. A scratch run then passes the worktree to `mutate.py` with `--repo`.
+- The reviewer never freezes a candidate, because the freeze registers a worktree in the repository's Git metadata.
 - A scratch copy does not isolate settings, services or host data. The [safety rules](../../../AGENTS.md#safety) apply to every scratch run.
 
 ### 3. Investigate and report (reviewer)

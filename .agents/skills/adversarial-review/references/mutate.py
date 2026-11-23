@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Run tests, with or without mutants, against an isolated scratch copy of the repository's candidate.
+r"""Run tests, with or without mutants, against an isolated scratch copy of the repository's candidate.
 
 Every scratch run of the review goes through this tool. Give it a mutants file to run mutants, or
 ``--tests`` to run tests against the unmutated copy. ``--add SOURCE=PATH`` puts a probe file, such as
 a new test, into the copy, so that a probe never needs a write to the repository.
 
 A mutants file is a Python file defining ``MUTANTS``, a list of tuples:
-``(name, invariant, root-relative path, old text, new text, [pytest arguments])``. Each mutant's
+``(name, invariant, root-relative path, old text, new text, [pytest arguments])``. The old and new
+text match the file's bytes literally, line endings included, so a multiline snippet for a CRLF file
+spells each line ending as ``\r\n``. Each mutant's
 pytest arguments are the narrowest tests that observe its invariant, run in a fresh process with
 every path, the home directory and the temporary directory inside the copy. The copy holds the
 tracked files and only the untracked files named with ``--untracked``. A plugin outside the copy
@@ -177,6 +179,17 @@ def mutation_target(tree: Path, name: str) -> Path:
     return tree / name
 
 
+def _target_state(file: Path) -> tuple[str, int] | None:
+    """Return a mutation target's text, with its line endings untranslated, and mode, or None if it is no longer a file.
+
+    ``newline=''`` here and in ``replace_text`` keeps CRLF endings, so a mutant changes only its own text.
+    """
+    if not file.is_file():
+        return None
+    with file.open(encoding='utf-8', newline='') as handle:
+        return handle.read(), stat.S_IMODE(file.stat().st_mode)
+
+
 def replace_text(tree: Path, name: str, text: str, mode: int) -> None:
     """Replace a file in the copy with a new file holding ``text`` and ``mode``, never writing through it.
 
@@ -192,7 +205,7 @@ def replace_text(tree: Path, name: str, text: str, mode: int) -> None:
     target = tree / name
     descriptor, temporary = tempfile.mkstemp(dir=target.parent, prefix='.mutate-')
     try:
-        with os.fdopen(descriptor, 'w', encoding='utf-8') as handle:
+        with os.fdopen(descriptor, 'w', encoding='utf-8', newline='') as handle:
             handle.write(text)
         os.chmod(temporary, mode)
         os.replace(temporary, target)
@@ -386,12 +399,19 @@ def run_mutants(
     Evidence is appended as each mutant finishes, so an interrupted batch keeps what it produced.
 
     Raises:
-        ValueError: If a mutant's old text does not occur exactly once, or the baseline fails.
+        ValueError: If a mutant's target is not a regular file or its old text does not occur exactly once,
+            the baseline fails, or a test changed a target's text or mode, so that the next mutant would
+            not apply to the candidate.
     """
     with scratch_copy(repo, untracked, additions) as scratch:
         tree = scratch.tree
+        candidate: dict[str, tuple[str, int]] = {}
         for mutant in mutants:
-            count = mutation_target(tree, mutant.path).read_text(encoding='utf-8').count(mutant.old)
+            state = _target_state(mutation_target(tree, mutant.path))
+            if state is None:
+                raise ValueError(f'{mutant.name}: {mutant.path} is not a regular file in the copy')
+            candidate[mutant.path] = state
+            count = state[0].count(mutant.old)
             if count != 1:
                 raise ValueError(f'{mutant.name}: the old text occurs {count} times in {mutant.path}')
         selected = sorted({test for mutant in mutants for test in mutant.tests})
@@ -409,8 +429,14 @@ def run_mutants(
         )
         not_killed = 0
         for mutant in mutants:
-            file = mutation_target(tree, mutant.path)
-            original, mode = file.read_text(encoding='utf-8'), stat.S_IMODE(file.stat().st_mode)
+            original, mode = candidate[mutant.path]
+            # A test may have rewritten the target in an earlier run; the mutant could then miss its old text
+            # and a failure caused by the rewrite would count as a kill of a mutant that was never applied.
+            if _target_state(mutation_target(tree, mutant.path)) != (original, mode):
+                raise ValueError(
+                    f'{mutant.name}: a test changed {mutant.path} in the copy, so the mutant would not apply to '
+                    'the candidate. Make the selected tests leave the copy unchanged.',
+                )
             replace_text(tree, mutant.path, original.replace(mutant.old, mutant.new), mode)
             try:
                 run = run_tests(tree, scratch.owned, scratch.plugin, repo, mutant.tests, timeout)

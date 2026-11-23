@@ -1,6 +1,7 @@
 """Exercise the review tools with owned Git repositories, stub commands and nested pytest runs."""
 
 import importlib.util
+import json
 import os
 import runpy
 import shlex
@@ -485,14 +486,16 @@ HARD_LINK_TEST = '''import os
 from pathlib import Path
 
 SENTINEL = Path({sentinel!r})
+LEAKED = Path({leaked!r})
 
 
 def test_link():
     """At the named stage, replace the file with a hard link to a file outside the copy; fail on the mutant."""
+    if 'a - b' in SENTINEL.read_text(encoding='utf-8'):
+        LEAKED.touch()  # recorded now, because a later write through the link could hide it
     calc = Path('youtube_collector/calc.py')
-    content = calc.read_text(encoding='utf-8')
-    mutated = 'a - b' in content
-    if 'outside' not in content and mutated == ({stage!r} == 'mutant'):
+    mutated = 'a - b' in calc.read_text(encoding='utf-8')
+    if not calc.samefile(SENTINEL) and mutated == ({stage!r} == 'mutant'):
         calc.unlink()
         os.link(SENTINEL, calc)
     assert not mutated
@@ -505,18 +508,88 @@ def test_mutate_never_writes_through_a_hard_link_that_a_test_made(tmp_path, repo
     # os.link needs the copy and the sentinel on one filesystem, so the copy goes below tmp_path.
     (tmp_path / 'scratch').mkdir()
     monkeypatch.setattr(tempfile, 'tempdir', str(tmp_path / 'scratch'))
-    sentinel = tmp_path / 'outside.py'
-    sentinel.write_text('def add(a, b):\n    return a + b  # outside\n', encoding='utf-8')
+    # Linked in the baseline, the sentinel must equal the candidate in text and mode, or the mutant is refused.
+    # Linked in the mutant's run, it differs, so a restore written through the link would show.
+    candidate = (repo / CALC).read_text(encoding='utf-8')
+    outside = candidate if stage == 'baseline' else candidate + '# outside\n'
+    sentinel, leaked = tmp_path / 'outside.py', tmp_path / 'leaked'
+    sentinel.write_text(outside, encoding='utf-8')
+    sentinel.chmod((repo / CALC).stat().st_mode & 0o777)
     probe = tmp_path / 'test_link.py'
-    probe.write_text(HARD_LINK_TEST.format(sentinel=str(sentinel), stage=stage), encoding='utf-8')
+    probe.write_text(HARD_LINK_TEST.format(sentinel=str(sentinel), leaked=str(leaked), stage=stage), encoding='utf-8')
     status, evidence = run_batch(
         tmp_path, repo, ('M1', 'links', CALC, 'a + b', 'a - b', ['tests/test_link.py']),
         extra=['--add', f'{probe}=tests/test_link.py'],
     )
-    assert sentinel.read_text(encoding='utf-8') == 'def add(a, b):\n    return a + b  # outside\n'
+    assert sentinel.read_text(encoding='utf-8') == outside
+    assert not leaked.exists()
     assert status == 0
     assert '[KILLED]' in evidence.read_text(encoding='utf-8')
 
+
+REWRITE_TEST = '''from pathlib import Path
+
+from youtube_collector.calc import add
+
+
+def test_rewrite():
+    """Pass on the imported code, then leave the mutation target changed in the copy."""
+    assert add(1, 2) == 3
+    calc = Path('youtube_collector/calc.py')
+    if {change!r} == 'text':
+        calc.write_text('def add(a, b):\\n    return 0\\n', encoding='utf-8')
+    else:
+        calc.chmod(0o755)
+'''
+
+
+@pytest.mark.parametrize('change', ['text', 'mode'])
+def test_mutate_stops_when_a_test_changed_the_target_before_its_mutant(tmp_path, repo, capsys, change):
+    """A mutant is applied only to the candidate's text and mode, so a test's own change never yields a kill."""
+    probe = tmp_path / 'test_rewrite.py'
+    probe.write_text(REWRITE_TEST.format(change=change), encoding='utf-8')
+    status, evidence = run_batch(
+        tmp_path, repo, ('M1', 'adds', CALC, 'a + b', 'a - b', ['tests/test_rewrite.py']),
+        extra=['--add', f'{probe}=tests/test_rewrite.py'],
+    )
+    assert status == 2
+    assert f'M1: a test changed {CALC} in the copy' in capsys.readouterr().err
+    assert '[KILLED]' not in evidence.read_text(encoding='utf-8')
+
+
+CRLF_TEST = '''from pathlib import Path
+
+
+def test_crlf():
+    """Fail if any line of the mutation target lost its CRLF ending."""
+    content = Path('youtube_collector/calc.py').read_bytes()
+    assert content.count(b'\\r\\n') == content.count(b'\\n') == 2
+'''
+
+
+def test_mutate_keeps_crlf_line_endings_in_the_mutant_and_the_restore(tmp_path, repo):
+    """Equivalent mutants of a CRLF file survive: neither the mutant's write nor the restore changes line endings."""
+    # Left uncommitted: the copy takes working-tree bytes, and core.autocrlf could normalize a commit.
+    (repo / CALC).write_bytes(b'def add(a, b):\r\n    return a + b\r\n')
+    probe = tmp_path / 'test_crlf.py'
+    probe.write_text(CRLF_TEST, encoding='utf-8')
+    status, evidence = run_batch(
+        tmp_path, repo, ('M1', 'equivalent', CALC, 'a + b', 'b + a', ['tests/test_crlf.py']),
+        ('M2', 'equivalent', CALC, 'return a + b', 'return (a + b)', ['tests/test_crlf.py']),
+        extra=['--add', f'{probe}=tests/test_crlf.py'],
+    )
+    text = evidence.read_text(encoding='utf-8')
+    assert status == 1
+    assert 'M1 [SURVIVED]' in text
+    assert 'M2 [SURVIVED]' in text
+
+
+def test_mutate_refuses_a_target_that_is_not_a_regular_file(tmp_path, repo, capsys):
+    """A mutant must name a file; a directory is refused before any run."""
+    status, evidence = run_batch(tmp_path, repo, ('M1', 'adds', 'youtube_collector', 'a + b', 'a - b', TESTS))
+    assert status == 2
+    assert 'youtube_collector is not a regular file' in capsys.readouterr().err
+    assert not evidence.exists()
 
 
 def test_mutate_removes_its_new_file_when_it_cannot_replace_the_target(tmp_path):
@@ -697,13 +770,14 @@ def test_worktree_gates_run_every_gate_and_report_a_failure(tmp_path, repo, monk
     assert 'FAILED mypy youtube_collector' in capsys.readouterr().out
 
 
-@pytest.mark.parametrize('absolute', [False, True])
-def test_worktree_gates_refuse_paths_outside_the_repository(tmp_path, repo, monkeypatch, capsys, absolute):
-    """A candidate path must stay inside the repository, and an owned file there is left alone."""
+@pytest.mark.parametrize('kind', ['climbing', 'absolute', 'root'])
+def test_worktree_gates_refuse_paths_outside_the_repository(tmp_path, repo, monkeypatch, capsys, kind):
+    """A candidate path must name a file inside the repository, and an owned file outside is left alone."""
     gate_stubs(repo, monkeypatch, tmp_path)
     sentinel = tmp_path / 'outside'
     sentinel.write_text('keep', encoding='utf-8')
-    name = str(sentinel) if absolute else '../outside'  # relative to the worktree, tmp_path/wt
+    # '../outside' is relative to the worktree, tmp_path/wt; '.' names the whole tree, not a file in it.
+    name = {'climbing': '../outside', 'absolute': str(sentinel), 'root': '.'}[kind]
     assert worktree_gates.main([str(tmp_path / 'wt'), name, '--repo', str(repo)]) == 2
     assert 'not a relative path' in capsys.readouterr().err
     assert sentinel.read_text(encoding='utf-8') == 'keep'
@@ -883,13 +957,14 @@ def test_worktree_gates_see_a_mode_change_that_git_is_configured_to_ignore(tmp_p
 
 
 @pytest.mark.parametrize('mode', ['--compare', '--remove'])
-def test_worktree_gates_skip_only_the_files_named_as_changed(tmp_path, repo, monkeypatch, capsys, mode):
-    """A file named as changed may differ, as a task record does; any other difference still counts."""
+@pytest.mark.parametrize('spelling', ['canonical', 'dotted'])
+def test_worktree_gates_skip_only_the_files_named_as_changed(tmp_path, repo, monkeypatch, capsys, mode, spelling):
+    """A file named as changed, in any spelling, may differ as a task record does; any other difference counts."""
     worktree = frozen(tmp_path, repo, monkeypatch)
     (repo / NEW).write_text('results added after the review', encoding='utf-8')
     (repo / CALC).write_text('def add(a, b):\n    return a + b + 0\n', encoding='utf-8')
     commit_candidate(repo)
-    arguments = [str(worktree), mode, '--repo', str(repo), '--changed', NEW]
+    arguments = [str(worktree), mode, '--repo', str(repo), '--changed', NEW if spelling == 'canonical' else f'./{NEW}']
     assert worktree_gates.main(arguments) == 1
     error = capsys.readouterr().err
     assert f"['{CALC}']" in error
@@ -964,6 +1039,43 @@ def test_worktree_gates_refuse_a_freeze_record_they_cannot_read(tmp_path, repo, 
     assert worktree_gates.main([str(worktree), '--remove', '--repo', str(repo)]) == 2
     assert 'worktree_gates:' in capsys.readouterr().err
     assert worktree.exists()
+
+
+@pytest.mark.parametrize('kind', ['absolute', 'climbing', 'dotted'])
+def test_worktree_gates_refuse_a_freeze_record_that_names_a_path_in_another_spelling(
+    tmp_path, repo, monkeypatch, capsys, kind,
+):
+    """A record key that is absolute, climbs or is not git's spelling is refused, even with a matching fingerprint."""
+    worktree = frozen(tmp_path, repo, monkeypatch)
+    commit_candidate(repo)
+    sentinel = tmp_path / 'outside'  # '../outside' from the worktree, tmp_path/wt, reaches it too
+    sentinel.write_text('keep', encoding='utf-8')
+    name, target = {
+        'absolute': (str(sentinel), sentinel), 'climbing': ('../outside', sentinel),
+        'dotted': (f'./{NEW}', worktree / NEW),
+    }[kind]
+    path = Path(git(worktree, 'rev-parse', '--absolute-git-dir').strip()) / 'worktree-gates.json'
+    record = json.loads(path.read_text(encoding='utf-8'))
+    record['files'][name] = worktree_gates._recorded(target)
+    path.write_text(json.dumps(record), encoding='utf-8')
+    assert worktree_gates.main([str(worktree), '--compare', '--repo', str(repo)]) == 2
+    assert 'is not a freeze record of this tool' in capsys.readouterr().err
+    assert sentinel.read_text(encoding='utf-8') == 'keep'
+
+
+@pytest.mark.parametrize('mode', ['--compare', '--remove'])
+def test_worktree_gates_store_a_named_path_in_the_spelling_git_reports(tmp_path, repo, monkeypatch, mode):
+    """A path named as ./path or with a doubled slash still matches git's view of the frozen worktree."""
+    gate_stubs(repo, monkeypatch, tmp_path)
+    (repo / CALC).write_text('def add(a, b):\n    return b + a\n', encoding='utf-8')
+    (repo / NEW).write_text('new', encoding='utf-8')
+    worktree = (tmp_path / 'wt').resolve()
+    names = [f'./{CALC}', NEW.replace('/', '//')]
+    assert worktree_gates.main([str(worktree), *names, '--repo', str(repo)]) == 0
+    git(repo, 'add', CALC, NEW)
+    git(repo, 'commit', '-q', '-m', 'candidate')
+    assert worktree_gates.main([str(worktree), mode, '--repo', str(repo)]) == 0
+    assert worktree.exists() == (mode == '--compare')
 
 
 @pytest.mark.parametrize('mode', ['--compare', '--remove'])
