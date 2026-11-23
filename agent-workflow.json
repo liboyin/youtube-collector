@@ -8,6 +8,8 @@
     ]
   },
   "dispatch": {
+    "model": "gpt-6.2-sol",
+    "effort": "high",
     "safety": "Never contact YouTube or use .env, browser profiles, the staging share or the service SQLite volume."
   }
 }
