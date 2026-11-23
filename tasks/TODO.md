@@ -23,6 +23,7 @@ These tasks are outside the sequence:
 - T14 waits for its revisit trigger.
 - T39 stays deferred until a real run with cookies, authorized under T25, informs its choice of backend (C52). T43, T44 and T51 make that run and that change easier.
 - T56 changes only the review tooling. It can land at any time.
+- T64 runs the gates and the review that T63 skipped. Do it before the next change that relies on the review tooling.
 
 ## Shared constraints
 
@@ -47,3 +48,4 @@ A check that needs a Docker daemon is a host check, because the dev container ha
 - [T51](open/T51.md) — Low. Give the caption adapter one method and drop the track protocols.
 - [T52](open/T52.md) — Low. Small cleanups from the 2026-11-14 review.
 - [T56](open/T56.md) — Low. Stop a nested pytest's output from making a mutation run INVALID.
+- [T64](open/T64.md) — High. Run the gates and the review for T63.

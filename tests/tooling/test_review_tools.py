@@ -6,6 +6,7 @@ import runpy
 import shlex
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -307,6 +308,20 @@ def test_mutate_replaces_a_symlink_instead_of_writing_through_it(tmp_path):
     assert outside.read_text(encoding='utf-8') == 'keep'
 
 
+def test_candidate_digest_tells_apart_a_mode_change_and_a_kind_change(tmp_path):
+    """Equal bytes still give distinct digests for another mode or for a symlink, which evidence identity needs."""
+    path = tmp_path / 'candidate'
+    path.write_text('target', encoding='utf-8')
+    path.chmod(0o644)
+    plain = mutate.candidate_digest(tmp_path, ['candidate'])
+    path.chmod(0o755)
+    executable = mutate.candidate_digest(tmp_path, ['candidate'])
+    path.unlink()
+    path.symlink_to('target')
+    link = mutate.candidate_digest(tmp_path, ['candidate'])
+    assert len({plain, executable, link}) == 3
+
+
 @pytest.mark.parametrize('arguments', [[], ['mutants.py', '--tests', 'tests/test_calc.py']])
 def test_mutate_requires_either_a_mutants_file_or_tests(arguments, capsys):
     """The two modes exclude each other, and one of them is required."""
@@ -402,6 +417,150 @@ def test_mutate_refuses_old_text_that_is_not_unique(tmp_path, repo, capsys, old,
     assert not evidence.exists()
 
 
+@pytest.mark.parametrize('kind', ['absolute', 'climbing', 'symlink', 'below a symlink'])
+def test_mutate_refuses_a_mutant_that_could_change_a_file_outside_the_copy(tmp_path, repo, capsys, monkeypatch, kind):
+    """A mutant path that leads out of the copy stops the batch before the outside file is read or written."""
+    # The copy lives at <tempdir>/mutate-*/tree, so three levels up from it is tmp_path, which owns the sentinel.
+    (tmp_path / 'scratch').mkdir()
+    monkeypatch.setattr(tempfile, 'tempdir', str(tmp_path / 'scratch'))
+    outside = tmp_path / 'outside'
+    outside.mkdir()
+    sentinel = outside / 'calc.py'
+    sentinel.write_text('def add(a, b):\n    return a + b\n', encoding='utf-8')
+    if kind in ('symlink', 'below a symlink'):
+        (repo / 'link').symlink_to(CALC if kind == 'symlink' else 'youtube_collector')
+        git(repo, 'add', 'link')
+        git(repo, 'commit', '-q', '-m', 'link')
+    path = {
+        'absolute': str(sentinel), 'climbing': '../../../outside/calc.py', 'symlink': 'link',
+        'below a symlink': 'link/calc.py',
+    }[kind]
+    status, evidence = run_batch(tmp_path, repo, ('M1', 'adds', path, 'a + b', 'a - b', TESTS))
+    assert status == 2
+    assert f'{path} is' in capsys.readouterr().err
+    assert sentinel.read_text(encoding='utf-8') == 'def add(a, b):\n    return a + b\n'
+    assert 'a + b' in (repo / CALC).read_text(encoding='utf-8')
+    assert not evidence.exists()
+
+
+SWAP_TEST = '''from pathlib import Path
+import shutil
+
+SENTINEL = Path({sentinel!r})
+
+
+def test_swap():
+    """Replace the mutated file, or its directory, with a link out of the copy once the mutant is in place."""
+    calc = Path('youtube_collector/calc.py')
+    if 'a - b' in calc.read_text(encoding='utf-8'):
+        if {parent!r}:
+            shutil.move('youtube_collector', 'moved')
+            Path('youtube_collector').symlink_to(SENTINEL.parent)
+        else:
+            calc.unlink()
+            calc.symlink_to(SENTINEL)
+        assert False, 'mutated'
+'''
+
+
+@pytest.mark.parametrize('parent', [False, True], ids=['file', 'parent'])
+def test_mutate_restores_the_copy_without_following_a_link_that_a_test_put_in_place(tmp_path, repo, capsys, parent):
+    """A test that swaps the mutated file or its directory for a link cannot steer the restore out of the copy."""
+    sentinel = tmp_path / 'outside' / 'calc.py'
+    sentinel.parent.mkdir()
+    sentinel.write_text('outside', encoding='utf-8')
+    probe = tmp_path / 'test_swap.py'
+    probe.write_text(SWAP_TEST.format(sentinel=str(sentinel), parent=parent), encoding='utf-8')
+    status, _ = run_batch(
+        tmp_path, repo, ('M1', 'swaps', CALC, 'a + b', 'a - b', ['tests/test_swap.py']),
+        extra=['--add', f'{probe}=tests/test_swap.py'],
+    )
+    assert sentinel.read_text(encoding='utf-8') == 'outside'
+    assert status == (2 if parent else 0)
+    if parent:
+        assert 'cannot be restored' in capsys.readouterr().err
+
+
+HARD_LINK_TEST = '''import os
+from pathlib import Path
+
+SENTINEL = Path({sentinel!r})
+
+
+def test_link():
+    """At the named stage, replace the file with a hard link to a file outside the copy; fail on the mutant."""
+    calc = Path('youtube_collector/calc.py')
+    content = calc.read_text(encoding='utf-8')
+    mutated = 'a - b' in content
+    if 'outside' not in content and mutated == ({stage!r} == 'mutant'):
+        calc.unlink()
+        os.link(SENTINEL, calc)
+    assert not mutated
+'''
+
+
+@pytest.mark.parametrize('stage', ['baseline', 'mutant'])
+def test_mutate_never_writes_through_a_hard_link_that_a_test_made(tmp_path, repo, monkeypatch, stage):
+    """A hard link made before the mutant's write, or before the restore, carries neither write out of the copy."""
+    # os.link needs the copy and the sentinel on one filesystem, so the copy goes below tmp_path.
+    (tmp_path / 'scratch').mkdir()
+    monkeypatch.setattr(tempfile, 'tempdir', str(tmp_path / 'scratch'))
+    sentinel = tmp_path / 'outside.py'
+    sentinel.write_text('def add(a, b):\n    return a + b  # outside\n', encoding='utf-8')
+    probe = tmp_path / 'test_link.py'
+    probe.write_text(HARD_LINK_TEST.format(sentinel=str(sentinel), stage=stage), encoding='utf-8')
+    status, evidence = run_batch(
+        tmp_path, repo, ('M1', 'links', CALC, 'a + b', 'a - b', ['tests/test_link.py']),
+        extra=['--add', f'{probe}=tests/test_link.py'],
+    )
+    assert sentinel.read_text(encoding='utf-8') == 'def add(a, b):\n    return a + b  # outside\n'
+    assert status == 0
+    assert '[KILLED]' in evidence.read_text(encoding='utf-8')
+
+
+
+def test_mutate_removes_its_new_file_when_it_cannot_replace_the_target(tmp_path):
+    """A failed replacement leaves no stray temporary file in the copy and reports the error."""
+    tree = tmp_path / 'tree'
+    (tree / 'pkg' / 'mod.py').mkdir(parents=True)
+    with pytest.raises(OSError):
+        mutate.replace_text(tree, 'pkg/mod.py', 'text', 0o644)
+    assert sorted(path.name for path in (tree / 'pkg').iterdir()) == ['mod.py']
+
+MODE_TEST = '''import os
+from pathlib import Path
+
+
+def test_mode():
+    """Require the file to stay executable, and swap it for a symlink while the first mutant is in place."""
+    calc = Path('youtube_collector/calc.py')
+    assert os.access(calc, os.X_OK)
+    if 'b + a' in calc.read_text(encoding='utf-8'):
+        content = calc.read_text(encoding='utf-8')
+        Path('moved.py').write_text(content, encoding='utf-8')
+        calc.unlink()
+        calc.symlink_to('../moved.py')
+'''
+
+
+def test_mutate_restores_the_mode_of_a_file_that_a_test_replaced(tmp_path, repo):
+    """After a test swaps an executable file for a link, the next mutant still starts from an executable file."""
+    (repo / CALC).chmod(0o755)
+    git(repo, 'add', CALC)
+    git(repo, 'commit', '-q', '-m', 'executable')
+    probe = tmp_path / 'test_mode.py'
+    probe.write_text(MODE_TEST, encoding='utf-8')
+    status, evidence = run_batch(
+        tmp_path, repo, ('M1', 'equivalent', CALC, 'a + b', 'b + a', ['tests/test_mode.py']),
+        ('M2', 'equivalent', CALC, 'return a + b', 'return (a + b)', ['tests/test_mode.py']),
+        extra=['--add', f'{probe}=tests/test_mode.py'],
+    )
+    text = evidence.read_text(encoding='utf-8')
+    assert status == 1
+    assert 'M1 [SURVIVED]' in text
+    assert 'M2 [SURVIVED]' in text
+
+
 def test_mutate_refuses_a_failing_baseline(tmp_path, repo, capsys):
     """Kills mean nothing against a failing baseline."""
     (repo / CALC).write_text('def add(a, b):\n    return 0\n', encoding='utf-8')
@@ -465,6 +624,14 @@ def test_mutate_refuses_an_absolute_symlink_even_into_the_repository(tmp_path, r
     (repo / 'link').symlink_to(repo / CALC)
     with pytest.raises(ValueError, match='out of the repository'):
         mutate.copy_candidate(repo, tmp_path / 'tree', ['link'])
+
+
+def test_mutate_refuses_a_relative_symlink_that_leads_from_the_copy_back_to_the_original(tmp_path, repo):
+    """Surplus ``..`` components stop at ``/`` in the repository, so only a check in the copy catches them."""
+    (repo / 'link').symlink_to('../' * 64 + str(repo / CALC).lstrip('/'))
+    assert (repo / 'link').resolve() == (repo / CALC).resolve()
+    with pytest.raises(ValueError, match='out of the copy'):
+        mutate.copy_candidate(repo, tmp_path / 'deeper/tree', ['link', CALC])
 
 
 def test_mutate_refuses_a_path_below_a_symlink(tmp_path, repo):
@@ -639,6 +806,18 @@ def test_worktree_gates_compare_reports_a_working_file_that_changed_after_the_fr
     assert (worktree / NEW).exists()
 
 
+
+def test_worktree_gates_compare_reports_a_named_file_that_matched_head_at_the_freeze(
+    tmp_path, repo, monkeypatch, capsys,
+):
+    """A named file without changes is still reviewed content, so a later edit to it is reported."""
+    gate_stubs(repo, monkeypatch, tmp_path)
+    worktree = (tmp_path / 'wt').resolve()
+    assert worktree_gates.main([str(worktree), TESTS[0], '--repo', str(repo)]) == 0
+    (repo / TESTS[0]).write_text('edited after the review\n', encoding='utf-8')
+    assert worktree_gates.main([str(worktree), '--compare', '--repo', str(repo)]) == 1
+    assert f"['{TESTS[0]}']" in capsys.readouterr().err
+
 def test_worktree_gates_compare_refuses_a_reviewed_path_below_a_symlink(tmp_path, repo, monkeypatch, capsys):
     """A parent that became a symlink must not lead the comparison to read outside the repository."""
     worktree = frozen(tmp_path, repo, monkeypatch)
@@ -728,6 +907,83 @@ def test_worktree_gates_remove_leaves_the_worktree_index_alone(tmp_path, repo, m
     assert worktree_gates.main([str(worktree), '--remove', '--repo', str(repo)]) == 1
     assert git(worktree, 'status', '--porcelain') == before
     assert '?? tests/new.txt' in before
+
+
+@pytest.mark.parametrize('mode', ['--compare', '--remove'])
+@pytest.mark.parametrize('change', ['restored', 'edited', 'deleted'])
+def test_worktree_gates_refuse_a_frozen_worktree_that_changed_after_the_freeze(
+    tmp_path, repo, monkeypatch, capsys, mode, change,
+):
+    """A reviewed file changed in the worktree, even back to HEAD's content, is named instead of compared away."""
+    worktree = frozen(tmp_path, repo, monkeypatch)
+    commit_candidate(repo)
+    if change == 'restored':
+        git(worktree, 'checkout', '--', CALC)
+    elif change == 'edited':
+        (worktree / CALC).write_text('def add(a, b):\n    return 0\n', encoding='utf-8')
+    else:
+        (worktree / CALC).unlink()
+    assert worktree_gates.main([str(worktree), mode, '--repo', str(repo)]) == 2
+    assert f"changed after the freeze in ['{CALC}']" in capsys.readouterr().err
+    assert str(worktree) in git(repo, 'worktree', 'list')
+
+
+def test_worktree_gates_keep_a_worktree_whose_index_stages_a_change(tmp_path, repo, monkeypatch, capsys):
+    """A blob staged in the worktree exists nowhere else, so the forced removal that would discard it is refused."""
+    worktree = frozen(tmp_path, repo, monkeypatch)
+    commit_candidate(repo)
+    reviewed = (worktree / CALC).read_text(encoding='utf-8')
+    (worktree / CALC).write_text('staged only\n', encoding='utf-8')
+    git(worktree, 'add', CALC)
+    (worktree / CALC).write_text(reviewed, encoding='utf-8')
+    assert worktree_gates.main([str(worktree), '--remove', '--repo', str(repo)]) == 2
+    assert f"the worktree index stages changes in ['{CALC}']" in capsys.readouterr().err
+    assert git(worktree, 'show', f':{CALC}') == 'staged only\n'
+
+
+@pytest.mark.parametrize('mode', ['--compare', '--remove'])
+def test_worktree_gates_refuse_a_worktree_without_a_freeze_record(tmp_path, repo, capsys, mode):
+    """A worktree made by hand has no record of the reviewed paths, so neither mode trusts it."""
+    worktree = (tmp_path / 'wt').resolve()
+    git(repo, 'worktree', 'add', '-q', '--detach', str(worktree), 'HEAD')
+    assert worktree_gates.main([str(worktree), mode, '--repo', str(repo)]) == 2
+    assert 'has no freeze record' in capsys.readouterr().err
+    assert worktree.exists()
+
+
+@pytest.mark.parametrize('content', [
+    '[]', '{"files": {}}', '{"head": "0"}', 'not json', '{"head": "%(head)s", "files": null}',
+])
+def test_worktree_gates_refuse_a_freeze_record_they_cannot_read(tmp_path, repo, monkeypatch, capsys, content):
+    """A record from another version or a damaged one is a clean refusal, and the worktree is kept."""
+    worktree = frozen(tmp_path, repo, monkeypatch)
+    head = git(worktree, 'rev-parse', 'HEAD').strip()
+    (Path(git(worktree, 'rev-parse', '--absolute-git-dir').strip()) / 'worktree-gates.json').write_text(
+        content % {'head': head}, encoding='utf-8',
+    )
+    assert worktree_gates.main([str(worktree), '--remove', '--repo', str(repo)]) == 2
+    assert 'worktree_gates:' in capsys.readouterr().err
+    assert worktree.exists()
+
+
+@pytest.mark.parametrize('mode', ['--compare', '--remove'])
+@pytest.mark.parametrize('change', ['commit', 'unnamed file'])
+def test_worktree_gates_refuse_a_worktree_changed_outside_its_named_files(
+    tmp_path, repo, monkeypatch, capsys, mode, change,
+):
+    """A commit in the worktree or a change to an unnamed path is outside the review, so neither mode accepts it."""
+    worktree = frozen(tmp_path, repo, monkeypatch)
+    commit_candidate(repo)
+    if change == 'commit':
+        git(worktree, 'commit', '-q', '--allow-empty', '-m', 'only here')
+        expected = "HEAD moved"
+    else:
+        for root in (repo, worktree):
+            (root / 'tests/extra.txt').write_text('added after the freeze', encoding='utf-8')
+        expected = "changed after the freeze in ['tests/extra.txt']"
+    assert worktree_gates.main([str(worktree), mode, '--repo', str(repo)]) == 2
+    assert expected in capsys.readouterr().err
+    assert str(worktree) in git(repo, 'worktree', 'list')
 
 
 def test_worktree_gates_report_a_path_that_is_not_a_worktree(tmp_path, repo, capsys):

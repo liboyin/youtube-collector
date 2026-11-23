@@ -25,6 +25,7 @@ import importlib.util
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -138,10 +139,13 @@ def copy_candidate(repo: Path, tree: Path, names: list[str]) -> None:
     """Copy the named files into ``tree``, keeping modes and recreating repository-relative symlinks.
 
     ``follow_symlinks=False`` protects only the final path component, so symlinked parents are refused.
+    Each copied link is checked again in the copy, once every file is in place: a relative link with
+    more ``..`` components than its depth stops at ``/`` in the repository but not in the deeper copy,
+    so it could resolve inside the repository and still lead from the copy back to the original.
 
     Raises:
-        ValueError: If a path lies below a symlink, or a symlink is absolute or leaves the repository;
-            the copy could not contain either.
+        ValueError: If a path lies below a symlink, or a symlink is absolute or leaves the repository
+            or the copy; the copy could not contain either.
     """
     for name in names:
         if any((repo / parent).is_symlink() for parent in PurePosixPath(name).parents):
@@ -152,6 +156,49 @@ def copy_candidate(repo: Path, tree: Path, names: list[str]) -> None:
         target = tree / name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target, follow_symlinks=False)
+    root = tree.resolve()
+    for name in names:
+        if (tree / name).is_symlink() and not (tree / name).resolve().is_relative_to(root):
+            raise ValueError(f'{name} is a symlink out of the copy')
+
+
+def mutation_target(tree: Path, name: str) -> Path:
+    """Return the file in the copy that a mutant of ``name`` changes.
+
+    Raises:
+        ValueError: If the path is absolute, climbs out of the copy, lies below a symlink or is a
+            symlink, so that a mutant could read or write a file outside the copy.
+    """
+    path = PurePosixPath(name)
+    if path.is_absolute() or '..' in path.parts:
+        raise ValueError(f'{name} is not a relative path inside the copy')
+    if any((tree / parent).is_symlink() for parent in path.parents) or (tree / name).is_symlink():
+        raise ValueError(f'{name} is or lies below a symlink in the copy')
+    return tree / name
+
+
+def replace_text(tree: Path, name: str, text: str, mode: int) -> None:
+    """Replace a file in the copy with a new file holding ``text`` and ``mode``, never writing through it.
+
+    A test may have replaced the file with a symlink or a hard link to a file outside the copy, so the
+    text goes to a new file in the same directory, which then replaces the path atomically. The old
+    inode, wherever else it is linked, keeps its content.
+
+    Raises:
+        ValueError: If a parent is a symlink, so that the path no longer leads into the copy.
+    """
+    if any((tree / parent).is_symlink() for parent in PurePosixPath(name).parents):
+        raise ValueError(f'{name}: a parent became a symlink during the run, so the copy cannot be restored')
+    target = tree / name
+    descriptor, temporary = tempfile.mkstemp(dir=target.parent, prefix='.mutate-')
+    try:
+        with os.fdopen(descriptor, 'w', encoding='utf-8') as handle:
+            handle.write(text)
+        os.chmod(temporary, mode)
+        os.replace(temporary, target)
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
 
 
 def parse_additions(values: list[str]) -> list[tuple[Path, str]]:
@@ -192,12 +239,19 @@ def add_file(tree: Path, source: Path, name: str) -> str:
 
 
 def candidate_digest(tree: Path, names: list[str]) -> str:
-    """Return a SHA-256 of the copy's paths and contents, which identifies the tested candidate."""
+    """Return a SHA-256 of the copy's paths, kinds, modes and contents, which identifies the tested candidate.
+
+    Each field is prefixed with its length, so no two different candidates share an encoding.
+    """
     digest = hashlib.sha256()
     for name in names:
         path = tree / name
-        content = os.fsencode(path.readlink()) if path.is_symlink() else path.read_bytes()
-        digest.update(name.encode() + b'\0' + content)
+        if path.is_symlink():
+            kind, content = b'link', os.fsencode(path.readlink())
+        else:
+            kind, content = b'file %o' % stat.S_IMODE(path.stat().st_mode), path.read_bytes()
+        for field in (os.fsencode(name), kind, content):
+            digest.update(b'%d:' % len(field) + field)
     return digest.hexdigest()
 
 
@@ -232,6 +286,7 @@ def run_tests(tree: Path, owned: Path, plugin: Path, repo: Path, tests: list[str
     try:
         done = subprocess.run(
             command, cwd=tree, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout,
+            check=False,
         )
     except subprocess.TimeoutExpired:
         return Run(None, f'timed out after {timeout:g} s', None, ())
@@ -336,7 +391,7 @@ def run_mutants(
     with scratch_copy(repo, untracked, additions) as scratch:
         tree = scratch.tree
         for mutant in mutants:
-            count = (tree / mutant.path).read_text(encoding='utf-8').count(mutant.old)
+            count = mutation_target(tree, mutant.path).read_text(encoding='utf-8').count(mutant.old)
             if count != 1:
                 raise ValueError(f'{mutant.name}: the old text occurs {count} times in {mutant.path}')
         selected = sorted({test for mutant in mutants for test in mutant.tests})
@@ -354,13 +409,13 @@ def run_mutants(
         )
         not_killed = 0
         for mutant in mutants:
-            file = tree / mutant.path
-            original = file.read_text(encoding='utf-8')
-            file.write_text(original.replace(mutant.old, mutant.new), encoding='utf-8')
+            file = mutation_target(tree, mutant.path)
+            original, mode = file.read_text(encoding='utf-8'), stat.S_IMODE(file.stat().st_mode)
+            replace_text(tree, mutant.path, original.replace(mutant.old, mutant.new), mode)
             try:
                 run = run_tests(tree, scratch.owned, scratch.plugin, repo, mutant.tests, timeout)
             finally:
-                file.write_text(original, encoding='utf-8')
+                replace_text(tree, mutant.path, original, mode)
             result = verdict(run)
             not_killed += result != 'KILLED'
             report = '\n  '.join((

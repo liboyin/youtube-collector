@@ -62,18 +62,21 @@ PY
 # Measure only the package in this tree. pytest does not put the working directory on sys.path, so
 # in a separate git worktree the dev container's editable install would supply the main tree's
 # package, and the gate would pass on the wrong files. -P gives this check that same sys.path:
-# without it, python3 reading its program from stdin would look in the working directory first.
+# without it, python3 reading its program from stdin would look in the working directory first. A
+# package directory that is a symlink resolves to its target on both sides, so the check also requires
+# the resolved package to lie inside the working directory.
 python3 -P - <<'PY' || exit 1
 """Exit with a message unless youtube_collector resolves to the working directory's package."""
 import importlib.util
 import sys
 from pathlib import Path
 
+root = Path.cwd().resolve()
+expected = root / 'youtube_collector'
 spec = importlib.util.find_spec('youtube_collector')
 origin = None if spec is None else spec.origin
-expected = (Path.cwd() / 'youtube_collector').resolve()
 actual = None if origin is None else Path(origin).resolve().parent
-if actual != expected:
+if actual is None or actual != expected.resolve() or not actual.is_relative_to(root):
     sys.exit(f"check-coverage: youtube_collector resolves to {actual}, not {expected}; "
              "set PYTHONPATH to this tree's root so the gate measures this tree")
 PY

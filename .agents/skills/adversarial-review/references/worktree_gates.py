@@ -13,9 +13,17 @@ candidate's files are uncommitted in the worktree by design, so plain ``git work
 refuses; ``--remove`` forces the removal only after that check. ``--changed PATH`` names a reviewed
 file that is expected to differ, such as a task record that gained its results after the review;
 both modes skip it.
+
+Freezing records the worktree's ``HEAD`` and each named path with its fingerprint in the worktree's own
+git directory. Both modes refuse a worktree whose ``HEAD`` moved, whose named files no longer match that
+record, or that changed a path outside them, and ``--remove`` also refuses a worktree whose index
+stages anything, so a change made in the worktree after the freeze is never compared away or
+discarded unseen.
 """
 
 import argparse
+import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -24,6 +32,7 @@ import tempfile
 from pathlib import Path, PurePosixPath
 
 GATES = (('./check-coverage.sh',), ('mypy', 'youtube_collector'), ('ruff', 'check', '.'))
+MANIFEST = 'worktree-gates.json'
 
 
 def _refuse_symlinked_parents(root: Path, files: list[str]) -> None:
@@ -66,6 +75,11 @@ def freeze(repo: Path, worktree: Path, files: list[str]) -> None:
             shutil.copy2(source, target, follow_symlinks=False)
         else:
             target.unlink(missing_ok=True)
+    record = {
+        'head': _git(worktree, 'rev-parse', 'HEAD').strip(),
+        'files': {name: _recorded(worktree / name) for name in files},
+    }
+    _manifest_path(worktree).write_text(json.dumps(record, indent=1, sort_keys=True), encoding='utf-8')
 
 
 def _git(root: Path, *arguments: str, env: dict[str, str] | None = None) -> str:
@@ -100,15 +114,56 @@ def _fingerprint(path: Path) -> tuple[str, bytes] | None:
     return f'file {os.access(path, os.X_OK)}', path.read_bytes()
 
 
+def _recorded(path: Path) -> list[str] | None:
+    """Return a path's fingerprint in the form the freeze record stores: its kind and a SHA-256."""
+    fingerprint = _fingerprint(path)
+    return None if fingerprint is None else [fingerprint[0], hashlib.sha256(fingerprint[1]).hexdigest()]
+
+
+def _manifest_path(worktree: Path) -> Path:
+    """Return where the freeze record of a worktree lives: its own git directory, outside its files."""
+    return Path(_git(worktree, 'rev-parse', '--absolute-git-dir').strip()) / MANIFEST
+
+
+def reviewed_names(worktree: Path, changed: frozenset[str]) -> tuple[str, list[str]]:
+    """Return the reviewed tree and the paths named at the freeze, less ``changed``, after checking the worktree.
+
+    Raises:
+        ValueError: If the worktree has no readable freeze record, its ``HEAD`` moved, a named path lies below a
+            symlink in it, a named file no longer matches its recorded fingerprint, or a path that was
+            not named differs from ``HEAD``.
+    """
+    path = _manifest_path(worktree)
+    if not path.is_file():
+        raise ValueError(f'{worktree} has no freeze record; only a worktree that this tool froze can be used')
+    record = json.loads(path.read_text(encoding='utf-8'))
+    valid = isinstance(record, dict) and isinstance(record.get('head'), str) and isinstance(record.get('files'), dict)
+    if not valid:
+        # A ValueError, not a TypeError: the record is data from disk, and main reports a ValueError as a refusal.
+        raise ValueError(f'{path} is not a freeze record of this tool')
+    if _git(worktree, 'rev-parse', 'HEAD').strip() != record['head']:
+        raise ValueError(f"the frozen worktree's HEAD moved from {record['head']} after the freeze")
+    files = record['files']
+    names = sorted(files)
+    _refuse_symlinked_parents(worktree, names)
+    tree, differing = reviewed_content(worktree)
+    drifted = [name for name in names if _recorded(worktree / name) != files[name]]
+    drifted += sorted(set(differing) - set(files))
+    if drifted:
+        raise ValueError(f'the frozen worktree changed after the freeze in {drifted}')
+    return tree, [name for name in names if name not in changed]
+
+
 def compare(repo: Path, worktree: Path, changed: frozenset[str]) -> list[str]:
     """Return the reviewed paths whose working files in the repository differ from the worktree's.
 
     Paths in ``changed`` are expected to differ and are skipped.
 
     Raises:
-        ValueError: If a reviewed path lies below a symlink in either tree.
+        ValueError: If the worktree no longer matches its freeze record, or a reviewed path lies below
+            a symlink in either tree.
     """
-    names = [name for name in reviewed_content(worktree)[1] if name not in changed]
+    names = reviewed_names(worktree, changed)[1]
     _refuse_symlinked_parents(repo, names)
     _refuse_symlinked_parents(worktree, names)
     return [name for name in names if _fingerprint(repo / name) != _fingerprint(worktree / name)]
@@ -121,9 +176,16 @@ def remove(repo: Path, worktree: Path, changed: frozenset[str]) -> list[str]:
 
     Returns:
         The reviewed paths that the commit does not hold; the worktree is removed only if there are none.
+
+    Raises:
+        ValueError: If the worktree no longer matches its freeze record, or its index stages a change,
+            which the forced removal would discard.
     """
-    tree, reviewed = reviewed_content(worktree)
-    names = [name for name in reviewed if name not in changed]
+    tree, names = reviewed_names(worktree, changed)
+    index = _git(worktree, 'diff', '--cached', '--name-only', '--no-renames', '-z', 'HEAD')
+    staged = [name for name in index.split('\0') if name]
+    if staged:
+        raise ValueError(f'the worktree index stages changes in {staged}; the removal would discard them')
     missing = _git(repo, 'diff', '--name-only', '--no-renames', '-z', tree, 'HEAD', '--', *names) if names else ''
     uncommitted = [name for name in missing.split('\0') if name]
     if not uncommitted:
@@ -136,7 +198,7 @@ def run_gates(worktree: Path) -> bool:
     env = {**os.environ, 'PYTHONPATH': str(worktree)}
     passed = True
     for gate in GATES:
-        status = subprocess.run(gate, cwd=worktree, env=env, stdin=subprocess.DEVNULL).returncode
+        status = subprocess.run(gate, cwd=worktree, env=env, stdin=subprocess.DEVNULL, check=False).returncode
         print(f"{'PASSED' if status == 0 else 'FAILED'} {' '.join(gate)}", flush=True)
         passed = passed and status == 0
     return passed

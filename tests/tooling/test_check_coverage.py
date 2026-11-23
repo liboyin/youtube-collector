@@ -65,7 +65,7 @@ MATCHING_PIN = object()
 
 def run_gate(
     runner, *, coverage_report=None, pytest_status=0, threshold=None, args=(), python_version=MATCHING_PIN,
-    package_root=None,
+    package_root=None, package_link=None,
 ):
     """Run the gate through the shared owned-subprocess runner with a ``pytest`` stub first on ``PATH``.
 
@@ -82,6 +82,8 @@ def run_gate(
             default the major and minor version of the gate's ``python3``, or None to write no file.
         package_root: Directory the child's ``youtube_collector`` resolves from, through ``PYTHONPATH``;
             by default the working directory, which then holds an empty package.
+        package_link: Directory that the working directory's ``youtube_collector`` is a symlink to,
+            instead of an empty package; the target must already hold ``__init__.py``.
 
     Returns:
         The completed process and the stub's recorded arguments, or None if the stub never ran.
@@ -91,8 +93,11 @@ def run_gate(
         python_version = '.'.join(actual.split('.')[:2]) + '\n'
     if python_version is not None:
         (runner.cwd / '.python-version').write_text(python_version, encoding='utf-8')
-    (runner.cwd / 'youtube_collector').mkdir()
-    (runner.cwd / 'youtube_collector' / '__init__.py').touch()
+    if package_link is None:
+        (runner.cwd / 'youtube_collector').mkdir()
+        (runner.cwd / 'youtube_collector' / '__init__.py').touch()
+    else:
+        (runner.cwd / 'youtube_collector').symlink_to(package_link)
     stub_dir = runner.cwd / 'bin'
     stub_dir.mkdir()
     invocations = runner.cwd / 'pytest-invocation'
@@ -158,6 +163,27 @@ def test_a_package_from_another_tree_fails_without_running_pytest(run_shell_scri
     assert str((run_shell_script.cwd / 'youtube_collector').resolve()) in result.stderr
     assert 'PYTHONPATH' in result.stderr
 
+
+
+@pytest.mark.parametrize('inside', [False, True], ids=['outside', 'inside'])
+def test_a_symlinked_package_runs_pytest_only_if_it_resolves_inside_the_working_tree(
+    run_shell_script, tmp_path_factory, inside,
+):
+    """A package symlink resolves to its target on both sides of the check, so only containment can refuse it."""
+    parent = run_shell_script.cwd / 'src' if inside else tmp_path_factory.mktemp('other-tree')
+    target = parent / 'youtube_collector'
+    target.mkdir(parents=True)
+    (target / '__init__.py').touch()
+
+    result, recorded = run_gate(run_shell_script, coverage_report=PASSING_REPORT, package_link=target)
+
+    if inside:
+        assert result.returncode == 0, result.stderr
+        assert recorded is not None
+    else:
+        assert recorded is None
+        assert result.returncode != 0
+        assert result.stderr.startswith(f'check-coverage: youtube_collector resolves to {target.resolve()}, not ')
 
 def test_the_working_tree_package_runs_pytest(run_shell_script):
     """A package resolving to the working directory passes the check and reaches pytest."""

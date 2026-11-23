@@ -203,7 +203,7 @@ ruff check .
 
 - `check-coverage.sh` runs pytest. It requires at least 80% statement coverage and branch coverage, for every measured file and for the project.
 - Run it from the repository root.
-- It refuses to run unless `youtube_collector` resolves to this tree's package.
+- It refuses to run unless `youtube_collector` resolves to this tree's package. A package directory that is a symlink must also resolve inside the working directory.
 - It also refuses to run unless `python3` matches the version that `.python-version` pins. A pin of `3.14` accepts any 3.14.x.
 - Without that check, a dev container built before a Python upgrade would pass the suite on its old interpreter. Rebuild the container when the check fails.
 - `COVERAGE_THRESHOLD` overrides the script's threshold with a number from 0 to 100 inclusive. An empty value keeps 80.
