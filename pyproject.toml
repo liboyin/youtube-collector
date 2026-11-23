@@ -69,5 +69,4 @@ line-length = 120
 select = ["E", "W", "F", "I", "B", "UP", "D"]
 
 [tool.ruff.lint.pydocstyle]
-# AGENTS.md requires Google-style docstrings.
 convention = "google"
