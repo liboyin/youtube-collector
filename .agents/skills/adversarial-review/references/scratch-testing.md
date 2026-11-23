@@ -8,6 +8,7 @@ Read this recipe before the first scratch run of a review.
 
 - Select the narrowest tests that observe the protected invariant, for each mutant.
 - If you probe premature acknowledgement or publication, make the mutant perform that side effect. A mutant that only prepares the operation proves nothing, unless the preparation is the protected invariant.
+- Before a `KILLED` mutant counts as evidence, read its failure detail. The tool treats only `SyntaxError`, `ImportError` and `NameError` as broken code. A `TypeError` or an `AttributeError` that the mutated code itself raises is still marked `KILLED`, so change such a mutant until the code runs.
 - If you show that a new test fails on the code before the change, the test MUST NOT use names that the change introduces. Give the test its own copies of those values.
 
 ## Contain the side effects
